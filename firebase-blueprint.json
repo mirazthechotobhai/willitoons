@@ -1,0 +1,28 @@
+{
+  "entities": {
+    "Character": {
+      "title": "Character",
+      "description": "A saved cartoon character model with skeleton joints, appearance, and custom element images.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID of the character" },
+        "name": { "type": "string", "description": "Display name of the character" },
+        "category": { "type": "string", "description": "Character category" },
+        "thumbnail": { "type": "string", "description": "Thumbnail data URL or image URL" },
+        "angle": { "type": "string", "description": "Current angle (front, threeQuarterFront, threeQuarterBack)" },
+        "joints": { "type": "object", "description": "Rigging bone joints mapping" },
+        "appearance": { "type": "object", "description": "Visual appearance configuration including custom uploads" },
+        "isCustom": { "type": "boolean", "description": "Whether this is a user-created or modified character" },
+        "updatedAt": { "type": "number", "description": "Timestamp of last update" },
+        "createdAt": { "type": "number", "description": "Timestamp of creation" }
+      },
+      "required": ["id", "name", "joints", "appearance"]
+    }
+  },
+  "firestore": {
+    "/characters/{characterId}": {
+      "schema": "Character",
+      "description": "Collection of community and user custom saved characters"
+    }
+  }
+}

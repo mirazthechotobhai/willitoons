@@ -1,0 +1,796 @@
+import React from 'react';
+import { StageElement, CharacterAnimationType, CharacterModel, AudioTrackItem } from '../types';
+import {
+  Sliders,
+  Trash2,
+  Copy,
+  FlipHorizontal,
+  ArrowUp,
+  ArrowDown,
+  Activity,
+  Type,
+  MessageSquare,
+  Sparkles,
+  RotateCw,
+  X,
+  Volume2,
+  VolumeX,
+  Play,
+  Lock,
+  Unlock,
+  Music,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Link,
+  Unlink,
+  FileUp,
+  Check,
+} from 'lucide-react';
+import { playSyntheticAudio, playUploadedAudio } from '../utils/audioEngine';
+import { VISEME_CONFIGS, MouthPreviewThumbnail } from '../utils/mouthRenderer';
+
+interface ElementInspectorProps {
+  element?: StageElement | null;
+  audioTrack?: AudioTrackItem | null;
+  onUpdateElement?: (id: string, updates: Partial<StageElement>) => void;
+  onDeleteElement?: (id: string) => void;
+  onDuplicateElement?: (id: string) => void;
+  onOpenCharacterStudioForEdit?: (model: CharacterModel) => void;
+  onUpdateAudioTrack?: (id: string, updates: Partial<AudioTrackItem>) => void;
+  onDeleteAudioTrack?: (id: string) => void;
+  onClose?: () => void;
+}
+
+const ANIMATION_PRESETS: { id: CharacterAnimationType; label: string; icon: string }[] = [
+  { id: 'idle', label: 'Idle Stance', icon: '🧍' },
+  { id: 'talk', label: 'Talking & Lip Sync', icon: '🗣️' },
+  { id: 'walk', label: 'Walking Cycle', icon: '🚶' },
+  { id: 'wave', label: 'Wave Hand', icon: '👋' },
+  { id: 'celebrate', label: 'Celebrate / Cheer', icon: '🎉' },
+  { id: 'jump', label: 'Joyful Jump', icon: '🦘' },
+  { id: 'run', label: 'Fast Run', icon: '🏃' },
+  { id: 'dance', label: 'Cartoon Dance', icon: '💃' },
+];
+
+export const ElementInspector: React.FC<ElementInspectorProps> = ({
+  element,
+  audioTrack,
+  onUpdateElement,
+  onDeleteElement,
+  onDuplicateElement,
+  onOpenCharacterStudioForEdit,
+  onUpdateAudioTrack,
+  onDeleteAudioTrack,
+  onClose,
+}) => {
+  const [keepAspect, setKeepAspect] = React.useState(true);
+  if (!element && !audioTrack) return null;
+
+  // --- AUDIO TRACK INSPECTOR ---
+  if (audioTrack && !element) {
+    const handlePlayPreview = () => {
+      if (audioTrack.url.startsWith('audio:')) {
+        playSyntheticAudio(audioTrack.url, audioTrack.volume, false);
+      } else {
+        playUploadedAudio(audioTrack.url, audioTrack.volume, false);
+      }
+    };
+
+    return (
+      <div className="w-72 bg-white border-l border-slate-200 flex flex-col h-full z-20 shadow-md select-none">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">
+          <div className="flex items-center space-x-2">
+            <Music className="w-4 h-4 text-green-600" />
+            <span className="text-xs font-bold text-slate-800 uppercase tracking-wider truncate">
+              Audio Properties
+            </span>
+          </div>
+
+          <div className="flex items-center space-x-1">
+            {onDeleteAudioTrack && (
+              <button
+                onClick={() => onDeleteAudioTrack(audioTrack.id)}
+                className="p-1.5 text-slate-400 hover:text-red-500 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+                title="Delete Audio Track"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+                title="Close Properties"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Body Controls */}
+        <div className="flex-1 p-4 overflow-y-auto space-y-4 text-xs bg-slate-50/30">
+          {/* Audio Name */}
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+              Audio Clip Name
+            </label>
+            <input
+              type="text"
+              value={audioTrack.name}
+              onChange={e => onUpdateAudioTrack && onUpdateAudioTrack(audioTrack.id, { name: e.target.value })}
+              className="w-full p-2 bg-white border border-slate-200 rounded-lg text-slate-800 font-medium focus:outline-none focus:border-green-500 shadow-xs text-xs"
+            />
+          </div>
+
+          {/* Audio Preview Button */}
+          <div className="pt-1">
+            <button
+              onClick={handlePlayPreview}
+              className="w-full py-2 px-3 bg-green-600 hover:bg-green-500 text-white font-semibold rounded-lg flex items-center justify-center space-x-2 cursor-pointer shadow-xs transition-colors"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>Preview Sound</span>
+            </button>
+          </div>
+
+          {/* Volume Slider */}
+          <div className="space-y-1.5 pt-2 border-t border-slate-200">
+            <div className="flex items-center justify-between text-[11px] text-slate-600">
+              <span className="font-semibold flex items-center space-x-1.5">
+                {audioTrack.isMuted ? <VolumeX className="w-3.5 h-3.5 text-red-500" /> : <Volume2 className="w-3.5 h-3.5 text-green-600" />}
+                <span>Volume</span>
+              </span>
+              <span className="font-mono text-slate-800 font-bold">
+                {audioTrack.isMuted ? 'Muted' : `${Math.round((audioTrack.volume ?? 0.8) * 100)}%`}
+              </span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={audioTrack.isMuted ? 0 : (audioTrack.volume ?? 0.8)}
+              disabled={audioTrack.isMuted}
+              onChange={e => onUpdateAudioTrack && onUpdateAudioTrack(audioTrack.id, { volume: parseFloat(e.target.value) })}
+              className="w-full accent-green-600 cursor-pointer disabled:opacity-40"
+            />
+          </div>
+
+          {/* Timing: Start Time & Duration */}
+          <div className="pt-2 border-t border-slate-200 space-y-2">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+              Timeline Alignment
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] text-slate-500 font-medium block mb-1">Start (seconds)</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={Math.round(audioTrack.startTime * 10) / 10}
+                  onChange={e => onUpdateAudioTrack && onUpdateAudioTrack(audioTrack.id, { startTime: Math.max(0, parseFloat(e.target.value) || 0) })}
+                  className="w-full p-1.5 bg-white border border-slate-200 rounded-lg text-slate-800 font-mono text-center focus:outline-none focus:border-green-500 shadow-xs"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 font-medium block mb-1">Duration (seconds)</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0.5"
+                  value={Math.round(audioTrack.duration * 10) / 10}
+                  onChange={e => onUpdateAudioTrack && onUpdateAudioTrack(audioTrack.id, { duration: Math.max(0.5, parseFloat(e.target.value) || 1) })}
+                  className="w-full p-1.5 bg-white border border-slate-200 rounded-lg text-slate-800 font-mono text-center focus:outline-none focus:border-green-500 shadow-xs"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Toggles: Mute and Lock */}
+          <div className="pt-2 border-t border-slate-200 grid grid-cols-2 gap-2">
+            <button
+              onClick={() => onUpdateAudioTrack && onUpdateAudioTrack(audioTrack.id, { isMuted: !audioTrack.isMuted })}
+              className={`p-2 rounded-lg flex items-center justify-center space-x-1.5 font-medium border transition-colors cursor-pointer ${
+                audioTrack.isMuted
+                  ? 'bg-red-50 text-red-600 border-red-200 font-semibold'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {audioTrack.isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+              <span>{audioTrack.isMuted ? 'Muted' : 'Mute Track'}</span>
+            </button>
+
+            <button
+              onClick={() => onUpdateAudioTrack && onUpdateAudioTrack(audioTrack.id, { locked: !audioTrack.locked })}
+              className={`p-2 rounded-lg flex items-center justify-center space-x-1.5 font-medium border transition-colors cursor-pointer ${
+                audioTrack.locked
+                  ? 'bg-amber-50 text-amber-600 border-amber-200 font-semibold'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {audioTrack.locked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+              <span>{audioTrack.locked ? 'Locked' : 'Unlocked'}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!element) return null;
+
+  return (
+    <div className="w-72 bg-white border-l border-slate-200 flex flex-col h-full z-20 shadow-md select-none">
+      
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">
+        <div className="flex items-center space-x-2">
+          <Sliders className="w-4 h-4 text-blue-600" />
+          <span className="text-xs font-bold text-slate-800 uppercase tracking-wider truncate">
+            {element.type} Properties
+          </span>
+        </div>
+
+        <div className="flex items-center space-x-1">
+          {onDuplicateElement && (
+            <button
+              onClick={() => onDuplicateElement(element.id)}
+              className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              title="Duplicate"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {onDeleteElement && (
+            <button
+              onClick={() => onDeleteElement(element.id)}
+              className="p-1.5 text-slate-400 hover:text-red-500 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              title="Delete"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              title="Close Properties"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Body Controls */}
+      <div className="flex-1 p-4 overflow-y-auto space-y-4 text-xs bg-slate-50/30">
+        
+        {/* CHARACTER SPECIFIC CONTROLS */}
+        {element.type === 'character' && element.characterData && (
+          <div className="space-y-3 pb-3 border-b border-slate-200">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-slate-800">{element.characterData.name}</span>
+              <button
+                onClick={() => onOpenCharacterStudioForEdit(element.characterData!)}
+                className="flex items-center space-x-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-[11px] font-semibold cursor-pointer shadow-xs"
+              >
+                <Activity className="w-3 h-3" />
+                <span>IK Rig / Edit</span>
+              </button>
+            </div>
+
+            {/* Animation Selector */}
+            <div>
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
+                Active Animation Pose
+              </label>
+              <div className="grid grid-cols-2 gap-1.5">
+                {ANIMATION_PRESETS.map(anim => {
+                  const isActive = (element.animation || 'idle') === anim.id;
+                  return (
+                    <button
+                      key={anim.id}
+                      onClick={() => onUpdateElement(element.id, { animation: anim.id })}
+                      className={`p-2 rounded-lg text-left flex items-center space-x-1.5 transition-colors cursor-pointer ${
+                        isActive
+                          ? 'bg-blue-600 text-white font-bold shadow-xs'
+                          : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                      }`}
+                    >
+                      <span>{anim.icon}</span>
+                      <span className="truncate text-[11px]">{anim.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Flip Horizontal */}
+            <div className="flex items-center justify-between pt-1">
+              <span className="text-slate-500 font-medium">Direction Facing</span>
+              <button
+                onClick={() => onUpdateElement(element.id, { scaleX: (element.scaleX || 1) === 1 ? -1 : 1 })}
+                className="flex items-center space-x-1 px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg cursor-pointer shadow-xs transition-colors"
+              >
+                <FlipHorizontal className="w-3.5 h-3.5 text-blue-600" />
+                <span>{element.scaleX === -1 ? 'Flipped (Left)' : 'Normal (Right)'}</span>
+              </button>
+            </div>
+
+            {/* LIPS & MOUTH CONTROLS (Format 1 vs Format 2) */}
+            <div className="pt-2 border-t border-slate-200 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center space-x-1">
+                  <span>👄</span>
+                  <span>Lips / Mouth Format</span>
+                </span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                  {element.characterData.appearance.lipsFormat === 'format2' ? 'Format 2 (Realistic)' : 'Format 1 (Classic)'}
+                </span>
+              </div>
+
+              {/* Toggle Buttons */}
+              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updatedChar: CharacterModel = {
+                      ...element.characterData!,
+                      appearance: {
+                        ...element.characterData!.appearance,
+                        lipsFormat: 'format1',
+                      },
+                    };
+                    onUpdateElement(element.id, { characterData: updatedChar });
+                  }}
+                  className={`py-1 px-2 rounded-md font-semibold text-[11px] text-center transition-all cursor-pointer ${
+                    element.characterData.appearance.lipsFormat !== 'format2'
+                      ? 'bg-white text-blue-700 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Format 1: Classic
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updatedChar: CharacterModel = {
+                      ...element.characterData!,
+                      appearance: {
+                        ...element.characterData!.appearance,
+                        lipsFormat: 'format2',
+                        lipColor: element.characterData!.appearance.lipColor || '#8D5538',
+                      },
+                    };
+                    onUpdateElement(element.id, { characterData: updatedChar });
+                  }}
+                  className={`py-1 px-2 rounded-md font-semibold text-[11px] text-center transition-all cursor-pointer flex items-center justify-center space-x-1 ${
+                    element.characterData.appearance.lipsFormat === 'format2'
+                      ? 'bg-white text-blue-700 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <span>Format 2: Realistic</span>
+                </button>
+              </div>
+
+              {/* Viseme Quick Strip if Format 2 */}
+              {element.characterData.appearance.lipsFormat === 'format2' ? (
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex items-center justify-between text-[10px] text-slate-500">
+                    <span>Viseme Expression:</span>
+                    <button
+                      type="button"
+                      onClick={() => onOpenCharacterStudioForEdit(element.characterData!)}
+                      className="text-blue-600 hover:text-blue-700 font-semibold cursor-pointer"
+                    >
+                      Studio / Upload PNG ↗
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {VISEME_CONFIGS.slice(0, 4).map(v => {
+                      const isCurrent =
+                        element.characterData!.appearance.mouthType === `mouth${v.id}` ||
+                        (v.id === 'X' && (element.characterData!.appearance.mouthType === 'idle' || element.characterData!.appearance.mouthType === 'mouthX')) ||
+                        (v.id === 'A' && element.characterData!.appearance.mouthType === 'smile') ||
+                        (v.id === 'B' && element.characterData!.appearance.mouthType === 'talkA');
+                      return (
+                        <button
+                          key={v.id}
+                          type="button"
+                          onClick={() => {
+                            const updatedChar: CharacterModel = {
+                              ...element.characterData!,
+                              appearance: {
+                                ...element.characterData!.appearance,
+                                mouthType: `mouth${v.id}`,
+                              },
+                            };
+                            onUpdateElement(element.id, { characterData: updatedChar });
+                          }}
+                          className={`p-1 rounded border flex flex-col items-center justify-center cursor-pointer transition-colors ${
+                            isCurrent
+                              ? 'bg-blue-50 border-blue-500 text-blue-900 font-bold'
+                              : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                          }`}
+                        >
+                          <MouthPreviewThumbnail
+                            viseme={v.id}
+                            format="format2"
+                            lipColor={element.characterData!.appearance.lipColor || '#8D5538'}
+                            customImage={element.characterData!.appearance.customMouthImages?.[v.id]}
+                            className="w-7 h-4"
+                          />
+                          <span className="text-[9px] mt-0.5">{v.id}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-4 gap-1 pt-1">
+                  {['idle', 'smile', 'talkA', 'angry'].map(mouth => (
+                    <button
+                      key={mouth}
+                      type="button"
+                      onClick={() => {
+                        const updatedChar: CharacterModel = {
+                          ...element.characterData!,
+                          appearance: {
+                            ...element.characterData!.appearance,
+                            mouthType: mouth,
+                          },
+                        };
+                        onUpdateElement(element.id, { characterData: updatedChar });
+                      }}
+                      className={`py-1 capitalize rounded text-[10px] border shadow-xs transition-colors cursor-pointer ${
+                        element.characterData!.appearance.mouthType === mouth
+                          ? 'bg-blue-600 text-white border-blue-600 font-semibold'
+                          : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {mouth}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Mouth / Lip Scale Slider (Locked anchor at 50, 22.5) */}
+              <div className="pt-2 border-t border-slate-100">
+                <div className="flex items-center justify-between text-[10px] text-slate-500 font-medium mb-1">
+                  <span>Mouth Size / Scale</span>
+                  <span className="font-mono text-slate-700 font-semibold">
+                    {Math.round((element.characterData.appearance.mouthScale || 1) * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0.3"
+                  max="3.0"
+                  step="0.05"
+                  value={element.characterData.appearance.mouthScale || 1}
+                  onChange={e => {
+                    const newScale = parseFloat(e.target.value);
+                    const updatedChar: CharacterModel = {
+                      ...element.characterData!,
+                      appearance: {
+                        ...element.characterData!.appearance,
+                        mouthScale: newScale,
+                      },
+                    };
+                    onUpdateElement(element.id, { characterData: updatedChar });
+                  }}
+                  className="w-full accent-blue-600 cursor-pointer h-1.5"
+                />
+                <div className="flex justify-between text-[9px] text-slate-400 mt-0.5">
+                  <span>30%</span>
+                  <span>100% (Default)</span>
+                  <span>300%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* SPEECH BUBBLE & TEXT CONTROLS */}
+        {(element.type === 'speechBubble' || element.type === 'text') && (
+          <div className="space-y-3 pb-3 border-b border-slate-200">
+            <div>
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                {element.type === 'speechBubble' ? 'Dialogue Text' : 'Text Content'}
+              </label>
+              <textarea
+                rows={2}
+                value={element.text || ''}
+                onChange={e => onUpdateElement(element.id, { text: e.target.value })}
+                className="w-full p-2 bg-white border border-slate-200 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-blue-500 resize-none shadow-xs transition-colors"
+              />
+            </div>
+
+            {element.type === 'speechBubble' && (
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                  Bubble Color
+                </label>
+                <div className="flex space-x-2">
+                  {['#ffffff', '#fef08a', '#bbf7d0', '#fed7aa', '#e2e8f0'].map(color => (
+                    <button
+                      key={color}
+                      onClick={() => onUpdateElement(element.id, { bubbleColor: color })}
+                      className={`w-6 h-6 rounded-full border-2 cursor-pointer transition-transform ${
+                        element.bubbleColor === color ? 'border-blue-600 scale-110 shadow-xs' : 'border-slate-300'
+                      }`}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <div className="flex items-center justify-between text-slate-500 text-[11px] mb-1">
+                <span>Font Size</span>
+                <span className="font-semibold text-slate-700">{element.fontSize || 16}px</span>
+              </div>
+              <input
+                type="range"
+                min="10"
+                max="40"
+                value={element.fontSize || 16}
+                onChange={e => onUpdateElement(element.id, { fontSize: parseInt(e.target.value) })}
+                className="w-full accent-blue-600 cursor-pointer"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* ELEMENT SIZE, ZOOM & SCALE (UNLIMITED BORO / CHOTO) */}
+        <div className="p-3 bg-blue-50/60 border border-blue-200/70 rounded-xl space-y-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-800 flex items-center space-x-1.5">
+              <ZoomIn className="w-3.5 h-3.5 text-blue-600" />
+              <span>Zoom & Scale (Size)</span>
+            </span>
+            <span className="font-mono text-[11px] font-bold text-blue-700 bg-white px-2 py-0.5 rounded border border-blue-200 shadow-2xs">
+              {Math.round(element.width)}% × {Math.round(element.height)}%
+            </span>
+          </div>
+
+          {/* Direct Zoom In & Out Quick Buttons */}
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              onClick={() => {
+                const factor = 0.8;
+                onUpdateElement(element.id, {
+                  width: Math.max(2, Math.round(element.width * factor)),
+                  height: Math.max(2, Math.round(element.height * factor)),
+                });
+              }}
+              className="py-1.5 px-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold shadow-2xs flex items-center justify-center space-x-1.5 transition-colors cursor-pointer"
+              title="Make Smaller (-20%)"
+            >
+              <ZoomOut className="w-3.5 h-3.5 text-slate-500" />
+              <span>Smaller (-)</span>
+            </button>
+
+            <button
+              onClick={() => {
+                const factor = 1.25;
+                onUpdateElement(element.id, {
+                  width: Math.max(2, Math.round(element.width * factor)),
+                  height: Math.max(2, Math.round(element.height * factor)),
+                });
+              }}
+              className="py-1.5 px-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold shadow-2xs flex items-center justify-center space-x-1.5 transition-colors cursor-pointer"
+              title="Make Bigger (+25% Unlimited)"
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+              <span>Bigger (+)</span>
+            </button>
+          </div>
+
+          {/* Quick Presets: 15% Tiny, 30% Small, 50% Medium, 100% Large, 200% Giant, 400%, 800%, 1500% */}
+          <div>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+              Quick Size Presets (Unlimited)
+            </span>
+            <div className="grid grid-cols-4 gap-1">
+              {[
+                { label: '15%', w: 15 },
+                { label: '30%', w: 30 },
+                { label: '50%', w: 50 },
+                { label: '100%', w: 90 },
+                { label: '200%', w: 180 },
+                { label: '400%', w: 360 },
+                { label: '800%', w: 720 },
+                { label: '1500%', w: 1350 },
+              ].map(preset => (
+                <button
+                  key={preset.label}
+                  onClick={() => {
+                    const baseRatio = (element.height || 1) / (element.width || 1);
+                    const newH = Math.round(preset.w * baseRatio);
+                    onUpdateElement(element.id, { width: preset.w, height: newH });
+                  }}
+                  className="py-1 bg-white hover:bg-blue-100 text-slate-700 hover:text-blue-700 border border-slate-200 rounded text-[10px] font-bold text-center transition-colors cursor-pointer"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Smooth Scale Slider (from 1% to 1500%+) */}
+          <div>
+            <div className="flex justify-between text-[10px] text-slate-500 font-medium mb-1">
+              <span>Smooth Scale Slider</span>
+              <span className="font-mono text-slate-700 font-semibold">{Math.round(element.width)}%</span>
+            </div>
+            <input
+              type="range"
+              min="1"
+              max="1500"
+              step="1"
+              value={element.width}
+              onChange={e => {
+                const newW = parseInt(e.target.value) || 2;
+                const ratio = (element.height || 1) / (element.width || 1);
+                onUpdateElement(element.id, {
+                  width: newW,
+                  height: keepAspect ? Math.max(2, Math.round(newW * ratio)) : element.height,
+                });
+              }}
+              className="w-full accent-blue-600 cursor-pointer h-1.5"
+            />
+          </div>
+        </div>
+
+        {/* TRANSFORM CONTROLS (Position, Dimensions, Rotation, Opacity) */}
+        <div className="space-y-3">
+          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+            Position & Coordinates
+          </span>
+
+          {/* Position X & Y */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] text-slate-500 font-medium block">Position X (%)</label>
+              <input
+                type="number"
+                value={element.x}
+                onChange={e => onUpdateElement(element.id, { x: parseInt(e.target.value) || 0 })}
+                className="w-full p-1.5 bg-white border border-slate-200 rounded-lg text-slate-800 font-mono text-center focus:outline-none focus:border-blue-500 shadow-xs"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 font-medium block">Position Y (%)</label>
+              <input
+                type="number"
+                value={element.y}
+                onChange={e => onUpdateElement(element.id, { y: parseInt(e.target.value) || 0 })}
+                className="w-full p-1.5 bg-white border border-slate-200 rounded-lg text-slate-800 font-mono text-center focus:outline-none focus:border-blue-500 shadow-xs"
+              />
+            </div>
+          </div>
+
+          {/* Width & Height with Aspect Ratio lock */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] text-slate-500 font-medium">Dimensions (%)</label>
+              <button
+                type="button"
+                onClick={() => setKeepAspect(!keepAspect)}
+                className={`text-[10px] flex items-center space-x-1 px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                  keepAspect ? 'bg-blue-100 text-blue-700 font-bold' : 'bg-slate-100 text-slate-500'
+                }`}
+                title={keepAspect ? 'Aspect Ratio Locked' : 'Aspect Ratio Free'}
+              >
+                {keepAspect ? <Link className="w-2.5 h-2.5" /> : <Unlink className="w-2.5 h-2.5" />}
+                <span>{keepAspect ? 'Locked Ratio' : 'Freeform'}</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] text-slate-400 block mb-0.5">Width (%)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="10000"
+                  value={element.width}
+                  onChange={e => {
+                    const val = parseInt(e.target.value) || 2;
+                    const ratio = (element.height || 1) / (element.width || 1);
+                    onUpdateElement(element.id, {
+                      width: val,
+                      ...(keepAspect ? { height: Math.max(2, Math.round(val * ratio)) } : {}),
+                    });
+                  }}
+                  className="w-full p-1.5 bg-white border border-slate-200 rounded-lg text-slate-800 font-mono text-center focus:outline-none focus:border-blue-500 shadow-2xs"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-400 block mb-0.5">Height (%)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="10000"
+                  value={element.height}
+                  onChange={e => {
+                    const val = parseInt(e.target.value) || 2;
+                    const ratio = (element.width || 1) / (element.height || 1);
+                    onUpdateElement(element.id, {
+                      height: val,
+                      ...(keepAspect ? { width: Math.max(2, Math.round(val * ratio)) } : {}),
+                    });
+                  }}
+                  className="w-full p-1.5 bg-white border border-slate-200 rounded-lg text-slate-800 font-mono text-center focus:outline-none focus:border-blue-500 shadow-2xs"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Rotation */}
+          <div>
+            <div className="flex items-center justify-between text-[11px] text-slate-500 mb-1">
+              <span>Rotation</span>
+              <span className="font-mono text-slate-700 font-semibold">{element.rotation || 0}°</span>
+            </div>
+            <input
+              type="range"
+              min="-180"
+              max="180"
+              value={element.rotation || 0}
+              onChange={e => onUpdateElement(element.id, { rotation: parseInt(e.target.value) })}
+              className="w-full accent-blue-600 cursor-pointer"
+            />
+          </div>
+
+          {/* Opacity */}
+          <div>
+            <div className="flex items-center justify-between text-[11px] text-slate-500 mb-1">
+              <span>Opacity</span>
+              <span className="font-mono text-slate-700 font-semibold">{Math.round((element.opacity ?? 1) * 100)}%</span>
+            </div>
+            <input
+              type="range"
+              min="0.1"
+              max="1"
+              step="0.05"
+              value={element.opacity ?? 1}
+              onChange={e => onUpdateElement(element.id, { opacity: parseFloat(e.target.value) })}
+              className="w-full accent-blue-600 cursor-pointer"
+            />
+          </div>
+        </div>
+
+        {/* Z-Index / Layer Ordering */}
+        <div className="pt-2 border-t border-slate-200 flex items-center justify-between">
+          <span className="text-slate-500 font-medium">Layer Arrangement</span>
+          <div className="flex space-x-1">
+            <button
+              onClick={() => onUpdateElement(element.id, { zIndex: element.zIndex + 1 })}
+              className="p-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg cursor-pointer shadow-xs transition-colors"
+              title="Bring Forward"
+            >
+              <ArrowUp className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => onUpdateElement(element.id, { zIndex: Math.max(1, element.zIndex - 1) })}
+              className="p-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg cursor-pointer shadow-xs transition-colors"
+              title="Send Backward"
+            >
+              <ArrowDown className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  );
+};

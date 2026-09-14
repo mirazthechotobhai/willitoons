@@ -70,7 +70,7 @@ export default function App() {
   // Selection & Active Tool States
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
   const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null);
-  const [activeLeftTab, setActiveLeftTab] = useState<LeftNavTab>('character');
+  const [activeLeftTab, setActiveLeftTab] = useState<LeftNavTab>(null);
   const [activeRightTab, setActiveRightTab] = useState<RightNavTab>(null);
 
   const handleSelectElement = (id: string | null) => {
@@ -524,85 +524,54 @@ export default function App() {
           }}
         />
 
-        {/* LEFT DRAWER: Character Drawer (Screenshot 4) */}
-        {activeLeftTab === 'character' && (
-          <CharacterDrawer
-            isOpen={true}
-            onClose={() => setActiveLeftTab(null)}
-            characters={characters}
-            onSelectCharacter={char => {
-              handleDropAssetOnStage('character', char, 50, 65);
-            }}
-            onCreateNewCharacter={() => {
-              setCharacterBeingEdited(null);
-              setIsCharacterStudioOpen(true);
-            }}
-            onEditCharacter={char => {
-              setCharacterBeingEdited(char);
-              setIsCharacterStudioOpen(true);
-            }}
-            onDragStartCharacter={handleDragStartCharacter}
-          />
-        )}
-
-        {/* LEFT DRAWER: Media Drawer (Screenshot 2 & 3: [Asset] and [Audio]) */}
-        {activeLeftTab === 'media' && (
-          <MediaDrawer
-            isOpen={true}
-            onClose={() => setActiveLeftTab(null)}
-            userAssets={userAssets}
-            onAddAsset={asset => setUserAssets(prev => [asset, ...prev])}
-            onDeleteAsset={id => setUserAssets(prev => prev.filter(a => a.id !== id))}
-            onSelectAssetForStage={asset => {
-              handleDropAssetOnStage('media', asset, 50, 50);
-            }}
-            onDragStartMedia={handleDragStartMedia}
-            onOpenAIVoiceModal={() => setIsVoiceoverModalOpen(true)}
-          />
-        )}
-
-        {/* LEFT DRAWER: Extra Tools (Text, Templates, AI Generation) */}
-        {activeLeftTab && activeLeftTab !== 'character' && activeLeftTab !== 'media' && (
-          <ExtraToolsDrawer
-            activeTab={activeLeftTab}
-            onClose={() => setActiveLeftTab(null)}
-            onAddTextElement={handleAddTextElement}
-            onApplyBackground={url => {
-              setScenes(prevScenes =>
-                prevScenes.map((sc, idx) =>
-                  idx === activeSceneIndex ? { ...sc, background: { type: 'image', value: url } } : sc
-                )
-              );
-            }}
-            onAddGeneratedAsset={asset => setUserAssets(prev => [asset, ...prev])}
-          />
-        )}
-
-        {/* CENTER COLUMN: CANVAS STAGE + PLAYBACK CONTROLS + TIMELINE */}
+        {/* WORKSPACE CENTER COLUMN: UPPER WORKSPACE (CANVAS + INSPECTOR) + BOTTOM TIMELINE */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-          
-          {/* Canvas Stage Wrapper */}
-          <CanvasStage
-            scene={activeScene}
-            project={project}
-            currentTime={currentTime}
-            isPlaying={isPlaying}
-            onTogglePlay={() => setIsPlaying(!isPlaying)}
-            onSeek={time => setCurrentTime(time)}
-            selectedElementId={selectedElementId}
-            onSelectElement={id => setSelectedElementId(id)}
-            onUpdateElement={handleUpdateElement}
-            onDeleteElement={handleDeleteElement}
-            onDuplicateElement={handleDuplicateElement}
-            onDropAssetOnStage={handleDropAssetOnStage}
-            zoomScale={zoomScale}
-            onChangeZoomScale={setZoomScale}
-            canvasRef={canvasStageRef}
-            onAddTextElement={() => handleAddTextElement('text')}
-            onAddSpeechBubble={() => handleAddTextElement('speechBubble')}
-          />
 
-          {/* Multi-Track Timeline (Screenshot 1) */}
+          {/* UPPER ROW: Center Canvas Stage + Right Inspector */}
+          <div className="flex-1 flex overflow-hidden min-h-0 min-w-0 relative">
+            
+            {/* Canvas Stage - Stays 100% full-width and centered, never moves or shifts */}
+            <CanvasStage
+              scene={activeScene}
+              project={project}
+              currentTime={currentTime}
+              isPlaying={isPlaying}
+              onTogglePlay={() => setIsPlaying(!isPlaying)}
+              onSeek={time => setCurrentTime(time)}
+              selectedElementId={selectedElementId}
+              onSelectElement={id => setSelectedElementId(id)}
+              onUpdateElement={handleUpdateElement}
+              onDeleteElement={handleDeleteElement}
+              onDuplicateElement={handleDuplicateElement}
+              onDropAssetOnStage={handleDropAssetOnStage}
+              zoomScale={zoomScale}
+              onChangeZoomScale={setZoomScale}
+              canvasRef={canvasStageRef}
+              onAddTextElement={() => handleAddTextElement('text')}
+              onAddSpeechBubble={() => handleAddTextElement('speechBubble')}
+            />
+
+            {/* RIGHT COLUMN: ELEMENT INSPECTOR */}
+            {(selectedElement || selectedAudio) && activeRightTab === 'inspector' && (
+              <ElementInspector
+                element={selectedElement}
+                audioTrack={selectedAudio}
+                onUpdateElement={handleUpdateElement}
+                onDeleteElement={handleDeleteElement}
+                onDuplicateElement={handleDuplicateElement}
+                onOpenCharacterStudioForEdit={char => {
+                  setCharacterBeingEdited(char);
+                  setIsCharacterStudioOpen(true);
+                }}
+                onUpdateAudioTrack={handleUpdateAudioTrack}
+                onDeleteAudioTrack={handleDeleteAudioTrack}
+                onClose={handleCloseInspector}
+              />
+            )}
+
+          </div>
+
+          {/* Multi-Track Timeline (Screenshot 1) - Anchored at the bottom, spans full width, never moves */}
           <Timeline
             scenes={scenes}
             activeSceneIndex={activeSceneIndex}
@@ -631,30 +600,71 @@ export default function App() {
 
         </div>
 
-        {/* RIGHT COLUMN: ELEMENT INSPECTOR */}
-        {(selectedElement || selectedAudio) && activeRightTab === 'inspector' && (
-          <ElementInspector
-            element={selectedElement}
-            audioTrack={selectedAudio}
-            onUpdateElement={handleUpdateElement}
-            onDeleteElement={handleDeleteElement}
-            onDuplicateElement={handleDuplicateElement}
-            onOpenCharacterStudioForEdit={char => {
-              setCharacterBeingEdited(char);
-              setIsCharacterStudioOpen(true);
-            }}
-            onUpdateAudioTrack={handleUpdateAudioTrack}
-            onDeleteAudioTrack={handleDeleteAudioTrack}
-            onClose={handleCloseInspector}
-          />
-        )}
-
         {/* RIGHT VERTICAL RAIL (Screenshot 1: Asset Library, Effects, Music, Sounds, Tutorials) */}
         <RightSidebarRail
           activeTab={activeRightTab}
           onSelectTab={tab => setActiveRightTab(tab)}
           hasSelectedElement={!!selectedElement}
         />
+
+        {/* FULL-HEIGHT FLOATING POPUP OVERLAY (Opens on top of both Canvas & Timeline - Canvas & Timeline remain 100% stationary and get maximum height for characters) */}
+        {activeLeftTab && activeLeftTab !== 'animIK' && (
+          <div className="absolute left-[68px] top-0 bottom-0 z-40 flex flex-col shadow-[14px_0_40px_rgba(0,0,0,0.22)] border-r border-slate-200 transition-all duration-200 ease-out">
+            {/* Character Drawer */}
+            {activeLeftTab === 'character' && (
+              <CharacterDrawer
+                isOpen={true}
+                onClose={() => setActiveLeftTab(null)}
+                characters={characters}
+                onSelectCharacter={char => {
+                  handleDropAssetOnStage('character', char, 50, 65);
+                }}
+                onCreateNewCharacter={() => {
+                  setCharacterBeingEdited(null);
+                  setIsCharacterStudioOpen(true);
+                }}
+                onEditCharacter={char => {
+                  setCharacterBeingEdited(char);
+                  setIsCharacterStudioOpen(true);
+                }}
+                onDragStartCharacter={handleDragStartCharacter}
+              />
+            )}
+
+            {/* Media Drawer */}
+            {activeLeftTab === 'media' && (
+              <MediaDrawer
+                isOpen={true}
+                onClose={() => setActiveLeftTab(null)}
+                userAssets={userAssets}
+                onAddAsset={asset => setUserAssets(prev => [asset, ...prev])}
+                onDeleteAsset={id => setUserAssets(prev => prev.filter(a => a.id !== id))}
+                onSelectAssetForStage={asset => {
+                  handleDropAssetOnStage('media', asset, 50, 50);
+                }}
+                onDragStartMedia={handleDragStartMedia}
+                onOpenAIVoiceModal={() => setIsVoiceoverModalOpen(true)}
+              />
+            )}
+
+            {/* Extra Tools (Text, Templates, AI Generation) */}
+            {activeLeftTab !== 'character' && activeLeftTab !== 'media' && (
+              <ExtraToolsDrawer
+                activeTab={activeLeftTab}
+                onClose={() => setActiveLeftTab(null)}
+                onAddTextElement={handleAddTextElement}
+                onApplyBackground={url => {
+                  setScenes(prevScenes =>
+                    prevScenes.map((sc, idx) =>
+                      idx === activeSceneIndex ? { ...sc, background: { type: 'image', value: url } } : sc
+                    )
+                  );
+                }}
+                onAddGeneratedAsset={asset => setUserAssets(prev => [asset, ...prev])}
+              />
+            )}
+          </div>
+        )}
 
       </div>
 

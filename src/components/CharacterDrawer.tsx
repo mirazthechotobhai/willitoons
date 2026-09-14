@@ -14,6 +14,7 @@ interface CharacterDrawerProps {
 }
 
 const CATEGORIES = [
+  'All',
   'Desi',
   'Village',
   'Western',
@@ -35,7 +36,7 @@ export const CharacterDrawer: React.FC<CharacterDrawerProps> = ({
   onEditCharacter,
   onDragStartCharacter,
 }) => {
-  const [activeCategory, setActiveCategory] = useState<string>('Desi');
+  const [activeCategory, setActiveCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState('');
 
   if (!isOpen) return null;
@@ -43,12 +44,14 @@ export const CharacterDrawer: React.FC<CharacterDrawerProps> = ({
   const filteredCharacters = characters.filter(char => {
     const matchesSearch = char.name.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory =
-      activeCategory === 'Latest' || char.category.toLowerCase() === activeCategory.toLowerCase();
+      activeCategory === 'All' ||
+      activeCategory === 'Latest' ||
+      char.category.toLowerCase() === activeCategory.toLowerCase();
     return matchesSearch && matchesCategory;
   });
 
   return (
-    <div className="w-80 h-full bg-white border-r border-slate-200 flex flex-col z-20 shadow-md select-none">
+    <div className="w-84 sm:w-96 h-full bg-white border-r border-slate-200 flex flex-col z-20 shadow-2xl select-none">
       
       {/* Header (Screenshot 4: Characters + Create) */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">

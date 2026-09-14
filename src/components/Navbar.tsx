@@ -54,11 +54,11 @@ export const Navbar: React.FC<NavbarProps> = ({
       <div className="flex items-center space-x-4">
         {/* Brand Icon Badge */}
         <div className="flex items-center space-x-2">
-          <div className="w-6 h-6 bg-blue-500 rounded flex items-center justify-center font-bold text-xs italic text-white shadow-sm">
-            2D
+          <div className="w-6 h-6 bg-gradient-to-tr from-amber-500 to-rose-500 rounded-md flex items-center justify-center font-black text-xs italic text-white shadow-sm ring-1 ring-amber-400/50">
+            W
           </div>
-          <span className="font-bold tracking-tight text-xs uppercase text-slate-100 hidden sm:inline-block">
-            AnimStudio Pro
+          <span className="font-extrabold tracking-tight text-sm text-slate-100 hidden sm:inline-block">
+            Willi<span className="text-amber-400">Toons</span>
           </span>
         </div>
 

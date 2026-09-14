@@ -11,6 +11,7 @@ import { INITIAL_PROJECT, INITIAL_SCENES } from './data/initialData';
 import { DEFAULT_CHARACTERS } from './utils/characterPresets';
 import { STOCK_BACKGROUNDS, STOCK_AUDIO } from './utils/mediaStock';
 import { playSyntheticAudio, playUploadedAudio } from './utils/audioEngine';
+import { loadCharactersFromCloud } from './services/characterService';
 
 // Subcomponents
 import { Navbar } from './components/Navbar';
@@ -34,6 +35,34 @@ export default function App() {
 
   // Characters Library State
   const [characters, setCharacters] = useState<CharacterModel[]>(DEFAULT_CHARACTERS);
+
+  // Load saved cloud characters from Firebase Firestore on startup
+  useEffect(() => {
+    let isMounted = true;
+    async function fetchCloudCharacters() {
+      try {
+        const cloudChars = await loadCharactersFromCloud();
+        if (isMounted && cloudChars && cloudChars.length > 0) {
+          setCharacters(prev => {
+            const map = new Map<string, CharacterModel>();
+            cloudChars.forEach(c => map.set(c.id, c));
+            prev.forEach(c => {
+              if (!map.has(c.id)) {
+                map.set(c.id, c);
+              }
+            });
+            return Array.from(map.values());
+          });
+        }
+      } catch (err) {
+        console.warn('Could not load characters from Firebase cloud:', err);
+      }
+    }
+    fetchCloudCharacters();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Media Library State (user uploaded + stock)
   const [userAssets, setUserAssets] = useState<MediaAsset[]>([]);

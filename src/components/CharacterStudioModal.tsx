@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { CharacterModel, JointId, CharacterAnimationType, CharacterAngle } from '../types';
+import { CharacterModel, JointId, CharacterAnimationType, CharacterAngle, LipsFormat } from '../types';
 import { CartoonCharacter } from './CartoonCharacter';
 import { DEFAULT_JOINTS, ANIMATION_PRESETS } from '../utils/characterPresets';
 import {
   X,
   Lock,
+  Unlock,
   Upload,
   RotateCcw,
   Download,
@@ -25,13 +26,29 @@ import {
   Compass,
   Play,
   Square,
-  Image,
+  Image as ImageIcon,
   FileUp,
   Check,
   RefreshCw,
   Palette,
+  Cloud,
+  CloudUpload,
+  Sliders,
+  Shield,
 } from 'lucide-react';
 import { VISEME_CONFIGS, MouthPreviewThumbnail } from '../utils/mouthRenderer';
+import {
+  downloadFile,
+  downloadDataUrl,
+  exportVisemeSvg,
+  exportEyesSvg,
+  exportHeadSvg,
+  exportHairSvg,
+  exportBodySvg,
+  exportHandSvg,
+  exportFeetSvg,
+} from '../utils/elementExporter';
+import { saveCharacterToCloud } from '../services/characterService';
 
 interface CharacterStudioModalProps {
   initialCharacter?: CharacterModel;
@@ -70,6 +87,9 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
         headwearColor: '#8c8a3e',
         additionalFacialHair: 'mustache',
         additionalAccessories: 'tilak',
+        mouthScale: 1.0,
+        mouthLocked: true,
+        lockedParts: { skeleton: false, head: false, eyes: false, mouth: true, body: false, limbs: false },
       },
       isCustom: true,
     };
@@ -86,7 +106,44 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
   const [isTalkingTest, setIsTalkingTest] = useState(false);
   const [activeUploadViseme, setActiveUploadViseme] = useState<string>('X');
   const [isDraggingMouth, setIsDraggingMouth] = useState(false);
+  
+  // Element File Input References
   const mouthFileInputRef = useRef<HTMLInputElement>(null);
+  const headFileInputRef = useRef<HTMLInputElement>(null);
+  const hairFileInputRef = useRef<HTMLInputElement>(null);
+  const eyesFileInputRef = useRef<HTMLInputElement>(null);
+  const bodyFileInputRef = useRef<HTMLInputElement>(null);
+  const handLFileInputRef = useRef<HTMLInputElement>(null);
+  const handRFileInputRef = useRef<HTMLInputElement>(null);
+  const footLFileInputRef = useRef<HTMLInputElement>(null);
+  const footRFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Cloud Save & Status States
+  const [isSavingToCloud, setIsSavingToCloud] = useState(false);
+  const [cloudStatusMsg, setCloudStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Pan and navigation states for full-body inspection
+  const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panToolActive, setPanToolActive] = useState(false);
+  const [spacebarDown, setSpacebarDown] = useState(false);
+  const panStartRef = useRef<{ mouseX: number; mouseY: number; startPanX: number; startPanY: number }>({
+    mouseX: 0,
+    mouseY: 0,
+    startPanX: 0,
+    startPanY: 0,
+  });
+
+  // Generic file upload handler for converting images into base64 Data URLs
+  const handleGenericFileUpload = (file: File, onSuccess: (dataUrl: string) => void) => {
+    if (!file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      const dataUrl = e.target?.result as string;
+      if (dataUrl) onSuccess(dataUrl);
+    };
+    reader.readAsDataURL(file);
+  };
 
   const handleMouthFilesUpload = (files: FileList | File[]) => {
     Array.from(files).forEach(file => {
@@ -124,27 +181,10 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
     });
   };
 
-  // Pan and navigation states for full-body inspection
-  const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const [panToolActive, setPanToolActive] = useState(false);
-  const [spacebarDown, setSpacebarDown] = useState(false);
-  const panStartRef = useRef<{ mouseX: number; mouseY: number; startPanX: number; startPanY: number }>({
-    mouseX: 0,
-    mouseY: 0,
-    startPanX: 0,
-    startPanY: 0,
-  });
-
-  // Spacebar keyboard listener for temporary Pan Tool (Figma/Photoshop standard)
+  // Spacebar keyboard listener for temporary Pan Tool
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (
-        e.code === 'Space' &&
-        !spacebarDown &&
-        document.activeElement?.tagName !== 'INPUT' &&
-        document.activeElement?.tagName !== 'TEXTAREA'
-      ) {
+      if (e.code === 'Space' && !e.repeat && document.activeElement?.tagName !== 'INPUT') {
         setSpacebarDown(true);
       }
     };
@@ -159,13 +199,17 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [spacebarDown]);
+  }, []);
 
-  // Window drag listeners when panning
+  // Global mouse up for pan release
   useEffect(() => {
-    if (!isPanning) return;
-
-    const onMouseMove = (e: MouseEvent) => {
+    const onWindowMouseUp = () => {
+      if (isPanning) {
+        setIsPanning(false);
+      }
+    };
+    const onWindowMouseMove = (e: MouseEvent) => {
+      if (!isPanning) return;
       const dx = e.clientX - panStartRef.current.mouseX;
       const dy = e.clientY - panStartRef.current.mouseY;
       setPanOffset({
@@ -173,36 +217,21 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
         y: Math.round(panStartRef.current.startPanY + dy),
       });
     };
-
-    const onMouseUp = () => {
-      setIsPanning(false);
-    };
-
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('mouseup', onWindowMouseUp);
+    window.addEventListener('mousemove', onWindowMouseMove);
     return () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('mouseup', onWindowMouseUp);
+      window.removeEventListener('mousemove', onWindowMouseMove);
     };
   }, [isPanning]);
 
-  // Accordion section states
-  const [openSection, setOpenSection] = useState<'layers' | 'feet' | 'eyes' | 'transform'>('layers');
-  const [openLayerSub, setOpenLayerSub] = useState<string | null>('head');
+  // Section Accordion State
+  const [openSection, setOpenSection] = useState<'layers' | 'feet' | 'eyes' | 'hands' | 'transform' | 'locks'>('layers');
+  const [openLayerSub, setOpenLayerSub] = useState<'head' | 'hair' | 'eyes' | 'lips' | 'body' | 'legs' | 'hands' | 'additionals' | null>('lips');
 
-  // Synchronize with initialCharacter when opening
-  useEffect(() => {
-    if (initialCharacter) {
-      setCharData(JSON.parse(JSON.stringify(initialCharacter)));
-      setActiveAngle(initialCharacter.angle || 'threeQuarterFront');
-    }
-  }, [initialCharacter]);
-
-  if (!isOpen) return null;
-
-  const currentAnim = ANIMATION_PRESETS[previewAnimIndex];
-
+  // Joint dragging handler
   const handleJointDrag = (jointId: JointId, newX: number, newY: number) => {
+    if (charData.appearance.lockedParts?.['skeleton']) return;
     setCharData(prev => ({
       ...prev,
       joints: {
@@ -229,17 +258,68 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
     setCharData(prev => ({ ...prev, angle }));
   };
 
-  const handleSave = () => {
-    onSaveCharacter(charData);
-    onClose();
+  // Toggle layer & rigging locks
+  const toggleLockPart = (part: string) => {
+    setCharData(prev => {
+      const current = prev.appearance.lockedParts || {};
+      const nextVal = !current[part];
+      return {
+        ...prev,
+        appearance: {
+          ...prev.appearance,
+          lockedParts: {
+            ...current,
+            [part]: nextVal,
+          },
+          // Also sync mouthLocked if mouth part toggled
+          ...(part === 'mouth' ? { mouthLocked: nextVal } : {}),
+        },
+      };
+    });
   };
 
+  // Firebase Cloud Save Handler
+  const handleSaveToCloud = async (saveAsNew: boolean) => {
+    setIsSavingToCloud(true);
+    setCloudStatusMsg(null);
+    try {
+      const savedCharacter = await saveCharacterToCloud(charData, saveAsNew);
+      onSaveCharacter(savedCharacter);
+      setCharData(savedCharacter);
+      setCloudStatusMsg({
+        type: 'success',
+        text: saveAsNew
+          ? `Saved as new character "${savedCharacter.name}" in WilliToons Cloud!`
+          : `Character "${savedCharacter.name}" updated successfully in WilliToons Cloud!`,
+      });
+      setTimeout(() => {
+        onClose();
+      }, 1500);
+    } catch (err: any) {
+      console.error('Failed to save character to Firebase:', err);
+      // Fallback: save locally and notify
+      onSaveCharacter(charData);
+      setCloudStatusMsg({
+        type: 'success',
+        text: 'Saved to local studio (offline mode)!',
+      });
+      setTimeout(() => {
+        onClose();
+      }, 1500);
+    } finally {
+      setIsSavingToCloud(false);
+    }
+  };
+
+  const currentAnim = ANIMATION_PRESETS[previewAnimIndex];
+  const isSkeletonLocked = !!charData.appearance.lockedParts?.['skeleton'];
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-2 sm:p-4">
-      <div className="relative flex flex-col w-full h-full max-w-[1400px] max-h-[920px] bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden text-slate-800">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-2 sm:p-4">
+      <div className="relative flex flex-col w-full h-full max-w-[1400px] max-h-[940px] bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden text-slate-800">
         
         {/* TOP MODAL HEADER */}
-        <div className="flex items-center justify-between px-6 py-3 border-b border-slate-200 bg-white">
+        <div className="flex items-center justify-between px-6 py-2.5 border-b border-slate-200 bg-slate-50/80">
           {/* Angle Switcher Tabs */}
           <div className="flex items-center space-x-6 text-sm font-semibold">
             {(['threeQuarterFront', 'front', 'threeQuarterBack'] as CharacterAngle[]).map(ang => {
@@ -250,7 +330,7 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                 <button
                   key={ang}
                   onClick={() => handleAngleChange(ang)}
-                  className={`relative pb-2 pt-1 transition-colors cursor-pointer ${
+                  className={`relative pb-1 pt-1 transition-colors cursor-pointer ${
                     isActive ? 'text-blue-600 font-bold' : 'text-slate-500 hover:text-slate-800'
                   }`}
                 >
@@ -263,143 +343,161 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
             })}
           </div>
 
-          {/* Right Header Buttons */}
-          <div className="flex items-center space-x-3">
-            <button className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 rounded-lg transition-colors cursor-pointer">
-              <BookOpen className="w-3.5 h-3.5 text-blue-600" />
-              <span>Watch Quick Guide</span>
+          {/* Center Title & WilliToons Badge */}
+          <div className="flex items-center space-x-2">
+            <span className="text-xs font-black px-2 py-0.5 rounded bg-gradient-to-r from-amber-500 to-rose-500 text-white shadow-xs">
+              WilliToons
+            </span>
+            <span className="font-bold text-slate-800 text-sm">{charData.name}</span>
+            <span className="text-[11px] text-slate-400 bg-slate-200/60 px-1.5 py-0.5 rounded">Character Studio</span>
+          </div>
+
+          {/* Right Header Actions */}
+          <div className="flex items-center space-x-3 text-xs text-slate-500">
+            <button
+              onClick={() => toggleLockPart('skeleton')}
+              title="Toggle Skeleton Lock"
+              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-lg border text-xs font-semibold cursor-pointer transition-all ${
+                isSkeletonLocked
+                  ? 'bg-amber-100 border-amber-300 text-amber-900 shadow-xs'
+                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+              }`}
+            >
+              {isSkeletonLocked ? <Lock className="w-3.5 h-3.5 text-amber-600" /> : <Unlock className="w-3.5 h-3.5 text-slate-400" />}
+              <span>{isSkeletonLocked ? 'Skeleton Locked' : 'Lock Skeleton'}</span>
             </button>
-
-            <div className="flex items-center space-x-1.5 px-3 py-1 bg-amber-50 border border-amber-200 rounded-lg text-xs font-bold text-amber-800">
-              <span>⚡ 0</span>
-            </div>
-
-            <button className="px-3 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors cursor-pointer shadow-xs">
-              Upgrade
-            </button>
-
             <button
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+              className="p-1 hover:bg-slate-200/60 rounded-full transition-colors cursor-pointer text-slate-500"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {/* MAIN STUDIO THREE-COLUMN WORKSPACE */}
+        {/* CLOUD STATUS BANNER */}
+        {cloudStatusMsg && (
+          <div
+            className={`px-6 py-2 text-xs font-semibold flex items-center justify-between transition-all ${
+              cloudStatusMsg.type === 'success' ? 'bg-emerald-50 text-emerald-800 border-b border-emerald-200' : 'bg-red-50 text-red-800 border-b border-red-200'
+            }`}
+          >
+            <div className="flex items-center space-x-2">
+              <Cloud className="w-4 h-4 text-emerald-600 animate-pulse" />
+              <span>{cloudStatusMsg.text}</span>
+            </div>
+            <button onClick={() => setCloudStatusMsg(null)} className="text-slate-400 hover:text-slate-600">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* MAIN BODY AREA */}
         <div className="flex flex-1 overflow-hidden">
           
-          {/* LEFT COLUMN: ACCORDION LAYERS & RIGGING CONTROLS */}
-          <div className="w-72 bg-white border-r border-slate-200 flex flex-col overflow-y-auto">
+          {/* LEFT SIDEBAR: CUSTOM ACCORDIONS & ELEMENT EDITORS */}
+          <div className="w-[340px] border-r border-slate-200 bg-white flex flex-col shrink-0 overflow-y-auto">
             
-            {/* Change Feet */}
+            {/* Rigging & Layer Locks Section */}
             <div className="border-b border-slate-100">
               <button
-                onClick={() => setOpenSection(openSection === 'feet' ? 'layers' : 'feet')}
-                className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold hover:bg-slate-50 text-slate-700 transition-colors cursor-pointer"
+                onClick={() => setOpenSection(openSection === 'locks' ? 'layers' : 'locks')}
+                className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-bold hover:bg-slate-50 text-slate-700 transition-colors cursor-pointer"
               >
                 <div className="flex items-center space-x-2">
-                  <span>Change Feet</span>
+                  <Shield className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Rigging & Element Locks</span>
                 </div>
-                <span>{openSection === 'feet' ? '−' : '+'}</span>
+                <span>{openSection === 'locks' ? '−' : '+'}</span>
               </button>
-              {openSection === 'feet' && (
-                <div className="p-3 bg-slate-50 space-y-2 text-xs">
-                  <div className="text-slate-500 font-medium">Footwear Type:</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {['barefoot', 'sandals', 'shoes', 'boots'].map(fw => (
-                      <button
-                        key={fw}
-                        onClick={() => {
-                          setCharData(prev => ({
-                            ...prev,
-                            appearance: { ...prev.appearance, legsType: prev.appearance.legsType },
-                          }));
-                        }}
-                        className="py-1.5 px-2 capitalize text-center bg-white hover:bg-blue-50 text-slate-700 rounded border border-slate-200 shadow-xs"
-                      >
-                        {fw}
-                      </button>
-                    ))}
+              {openSection === 'locks' && (
+                <div className="p-3 bg-slate-50 space-y-2 text-xs border-t border-slate-100">
+                  <div className="text-[11px] text-slate-500 mb-1">
+                    Lock elements to prevent accidental movement or bone dragging:
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {[
+                      { key: 'skeleton', label: 'Skeleton IK', icon: '🦴' },
+                      { key: 'mouth', label: 'Mouth / Lips', icon: '👄' },
+                      { key: 'eyes', label: 'Eyes', icon: '👁' },
+                      { key: 'head', label: 'Head / Face', icon: '😊' },
+                      { key: 'body', label: 'Body / Torso', icon: '👕' },
+                      { key: 'limbs', label: 'Hands & Feet', icon: '✋' },
+                    ].map(lk => {
+                      const locked = !!charData.appearance.lockedParts?.[lk.key];
+                      return (
+                        <button
+                          key={lk.key}
+                          onClick={() => toggleLockPart(lk.key)}
+                          className={`flex items-center justify-between px-2 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition-all ${
+                            locked
+                              ? 'bg-amber-100 border-amber-300 text-amber-900 shadow-2xs'
+                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          <span className="flex items-center space-x-1.5 truncate">
+                            <span>{lk.icon}</span>
+                            <span className="truncate">{lk.label}</span>
+                          </span>
+                          {locked ? <Lock className="w-3 h-3 text-amber-600 shrink-0" /> : <Unlock className="w-3 h-3 text-slate-300 shrink-0" />}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Change Eyes */}
-            <div className="border-b border-slate-100">
-              <button
-                onClick={() => setOpenSection(openSection === 'eyes' ? 'layers' : 'eyes')}
-                className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold hover:bg-slate-50 text-slate-700 transition-colors cursor-pointer"
-              >
-                <div className="flex items-center space-x-2">
-                  <span>Change Eyes</span>
-                </div>
-                <span>{openSection === 'eyes' ? '−' : '+'}</span>
-              </button>
-              {openSection === 'eyes' && (
-                <div className="p-3 bg-slate-50 space-y-2 text-xs">
-                  <div className="grid grid-cols-2 gap-2">
-                    {['standard', 'kind', 'big', 'determined', 'angry'].map(eye => (
-                      <button
-                        key={eye}
-                        onClick={() => {
-                          setCharData(prev => ({
-                            ...prev,
-                            appearance: { ...prev.appearance, eyeType: eye },
-                          }));
-                        }}
-                        className={`py-1.5 px-2 capitalize text-center rounded border transition-colors shadow-xs ${
-                          charData.appearance.eyeType === eye
-                            ? 'bg-blue-600 text-white border-blue-600 font-bold'
-                            : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
-                        }`}
-                      >
-                        {eye}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Transform */}
+            {/* Transform & Canvas Pan/Zoom Section */}
             <div className="border-b border-slate-100">
               <button
                 onClick={() => setOpenSection(openSection === 'transform' ? 'layers' : 'transform')}
-                className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold hover:bg-slate-50 text-slate-700 transition-colors cursor-pointer"
+                className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-bold hover:bg-slate-50 text-slate-700 transition-colors cursor-pointer"
               >
                 <div className="flex items-center space-x-2">
-                  <span>Transform & Canvas</span>
+                  <Sliders className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Zoom, Pan & Flip Canvas</span>
                 </div>
                 <span>{openSection === 'transform' ? '−' : '+'}</span>
               </button>
               {openSection === 'transform' && (
-                <div className="p-3 bg-slate-50 space-y-3 text-xs">
+                <div className="p-3 bg-slate-50 space-y-3 text-xs border-t border-slate-100">
                   <div>
                     <div className="flex justify-between items-center mb-1">
-                      <label className="text-slate-600 font-semibold">Scale / Zoom</label>
+                      <label className="text-slate-600 font-semibold">Scale / Zoom Level</label>
                       <span className="font-mono text-blue-600 font-bold">{Math.round(zoomLevel * 100)}%</span>
                     </div>
                     <input
                       type="range"
-                      min="0.4"
-                      max="3.0"
+                      min="0.25"
+                      max="3.5"
                       step="0.05"
                       value={zoomLevel}
                       onChange={e => setZoomLevel(parseFloat(e.target.value))}
                       className="w-full accent-blue-600 cursor-pointer"
                     />
+                    <div className="flex items-center justify-between pt-1.5 gap-1">
+                      {[0.5, 0.75, 1.0, 1.5, 2.0].map(z => (
+                        <button
+                          key={z}
+                          onClick={() => setZoomLevel(z)}
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border cursor-pointer ${
+                            zoomLevel === z ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          {Math.round(z * 100)}%
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between pt-1 text-slate-600">
-                    <span className="text-xs">Pan: X: {panOffset.x}px, Y: {panOffset.y}px</span>
+                    <span className="text-[11px]">Pan: X: {panOffset.x}px, Y: {panOffset.y}px</span>
                     <button
                       onClick={handleResetView}
                       className="px-2 py-0.5 bg-white hover:bg-slate-100 border border-slate-200 rounded text-[11px] font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer"
                     >
-                      Recenter
+                      Recenter View
                     </button>
                   </div>
 
@@ -418,32 +516,458 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
               )}
             </div>
 
-            {/* Layers */}
-            <div className="border-b border-slate-100 flex-1">
-              <div className="flex items-center justify-between px-4 py-3 text-sm font-bold bg-slate-50 text-slate-800 border-b border-slate-100">
-                <div className="flex items-center space-x-2">
-                  <span>Layers</span>
-                </div>
-                <span>−</span>
+            {/* PRIMARY LAYERS & ELEMENTS (WITH DIRECT DOWNLOAD & UPLOAD PER ELEMENT) */}
+            <div>
+              <div className="px-4 py-2 bg-slate-100/70 border-b border-slate-200 flex items-center justify-between text-xs font-bold text-slate-700">
+                <span>Character Elements (Upload & Download)</span>
+                <span className="text-[10px] text-blue-600 font-semibold">SVG / PNG</span>
               </div>
 
               <div className="divide-y divide-slate-100 text-xs">
-                {/* Head */}
+                
+                {/* 1. LIPS / MOUTH VISUALS (Format 1 & Realistic Format 2) */}
+                <div>
+                  <button
+                    onClick={() => setOpenLayerSub(openLayerSub === 'lips' ? null : 'lips')}
+                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium cursor-pointer"
+                  >
+                    <span className="flex items-center space-x-2">
+                      <span>👄</span>
+                      <span className="font-semibold">Lips / Mouth (Formats 1 & 2)</span>
+                    </span>
+                    <div className="flex items-center space-x-1.5">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                        {charData.appearance.lipsFormat === 'format2' ? 'Format 2 (Realistic)' : 'Format 1'}
+                      </span>
+                      <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'lips' ? 'rotate-180' : ''}`} />
+                    </div>
+                  </button>
+                  {openLayerSub === 'lips' && (
+                    <div className="px-4 py-3 bg-slate-50/90 space-y-3.5 border-t border-slate-100 text-xs">
+                      {/* Format Selector */}
+                      <div className="grid grid-cols-2 gap-1.5 bg-slate-200/50 p-0.5 rounded-lg">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCharData(p => ({
+                              ...p,
+                              appearance: { ...p.appearance, lipsFormat: 'format1' },
+                            }))
+                          }
+                          className={`py-1 text-center rounded-md font-semibold text-[11px] transition-all cursor-pointer ${
+                            charData.appearance.lipsFormat !== 'format2'
+                              ? 'bg-white text-blue-600 shadow-xs'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          Format 1: Classic
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCharData(p => ({
+                              ...p,
+                              appearance: { ...p.appearance, lipsFormat: 'format2' },
+                            }))
+                          }
+                          className={`py-1 text-center rounded-md font-semibold text-[11px] transition-all cursor-pointer flex items-center justify-center space-x-1 ${
+                            charData.appearance.lipsFormat === 'format2'
+                              ? 'bg-white text-amber-700 shadow-xs'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          <span>Format 2: Realistic</span>
+                          <span className="text-[9px] bg-amber-500 text-white px-1 py-0.2 rounded-full">New</span>
+                        </button>
+                      </div>
+
+                      {/* Download All Visemes Button */}
+                      <div className="flex items-center justify-between gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // Download all 7 visemes
+                            ['X', 'A', 'B', 'C', 'D', 'E', 'F'].forEach((viseme, idx) => {
+                              setTimeout(() => {
+                                const svgStr = exportVisemeSvg(viseme, charData.appearance);
+                                downloadFile(svgStr, `willitoons-viseme-${viseme}.svg`);
+                              }, idx * 200);
+                            });
+                          }}
+                          className="flex-1 py-1.5 px-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-semibold text-blue-700 flex items-center justify-center space-x-1 shadow-2xs cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Download All 7 Shapes (SVG)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => mouthFileInputRef.current?.click()}
+                          className="py-1.5 px-2.5 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-[11px] font-semibold text-blue-700 flex items-center space-x-1 cursor-pointer"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>Upload</span>
+                        </button>
+                      </div>
+
+                      {/* Visemes Grid with individual Download & Upload */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                            Viseme / Mouth Shapes
+                          </label>
+                          <span className="text-[10px] text-slate-400">7 Visemes</span>
+                        </div>
+                        <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                          {VISEME_CONFIGS.map(v => {
+                            const isCurrent =
+                              charData.appearance.mouthType === `mouth${v.id}` ||
+                              (v.id === 'X' && (charData.appearance.mouthType === 'idle' || charData.appearance.mouthType === 'mouthX')) ||
+                              (v.id === 'A' && charData.appearance.mouthType === 'smile') ||
+                              (v.id === 'B' && charData.appearance.mouthType === 'talkA') ||
+                              (v.id === 'D' && charData.appearance.mouthType === 'angry') ||
+                              (v.id === 'E' && charData.appearance.mouthType === 'talkO');
+                            const hasCustom = !!charData.appearance.customMouthImages?.[v.id];
+
+                            return (
+                              <div
+                                key={v.id}
+                                className={`flex items-center justify-between p-1.5 rounded-lg border transition-all ${
+                                  isCurrent
+                                    ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-xs'
+                                    : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700'
+                                }`}
+                              >
+                                <div
+                                  onClick={() => {
+                                    setActiveUploadViseme(v.id);
+                                    setCharData(p => ({
+                                      ...p,
+                                      appearance: { ...p.appearance, mouthType: `mouth${v.id}` },
+                                    }));
+                                  }}
+                                  className="flex items-center space-x-2 flex-1 cursor-pointer"
+                                >
+                                  <MouthPreviewThumbnail
+                                    viseme={v.id}
+                                    format={charData.appearance.lipsFormat || 'format2'}
+                                    lipColor={charData.appearance.lipColor || '#8D5538'}
+                                    customImage={charData.appearance.customMouthImages?.[v.id]}
+                                    className="w-10 h-6 bg-slate-100 rounded p-0.5 shrink-0"
+                                  />
+                                  <div>
+                                    <div className="flex items-center space-x-1.5">
+                                      <span className="font-bold text-[11px]">{v.label}</span>
+                                      {hasCustom && (
+                                        <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 rounded font-semibold">
+                                          Custom
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 line-clamp-1">{v.desc}</div>
+                                  </div>
+                                </div>
+
+                                {/* Download & Upload buttons for this specific viseme */}
+                                <div className="flex items-center space-x-1 shrink-0 ml-1">
+                                  <button
+                                    type="button"
+                                    title={`Download Viseme ${v.id} as SVG`}
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      const svg = exportVisemeSvg(v.id, charData.appearance);
+                                      downloadFile(svg, `willi-mouth-${v.id}.svg`);
+                                    }}
+                                    className="p-1 hover:bg-slate-200 text-slate-600 rounded cursor-pointer"
+                                  >
+                                    <Download className="w-3.5 h-3.5 text-blue-600" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    title={`Upload custom replacement for Viseme ${v.id}`}
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      setActiveUploadViseme(v.id);
+                                      mouthFileInputRef.current?.click();
+                                    }}
+                                    className="p-1 hover:bg-slate-200 text-slate-600 rounded cursor-pointer"
+                                  >
+                                    <Upload className="w-3.5 h-3.5 text-emerald-600" />
+                                  </button>
+                                  {hasCustom && (
+                                    <button
+                                      type="button"
+                                      title="Remove custom image"
+                                      onClick={e => {
+                                        e.stopPropagation();
+                                        setCharData(p => {
+                                          const next = { ...(p.appearance.customMouthImages || {}) };
+                                          delete next[v.id];
+                                          return { ...p, appearance: { ...p.appearance, customMouthImages: next } };
+                                        });
+                                      }}
+                                      className="p-1 hover:bg-red-100 text-red-500 rounded cursor-pointer"
+                                    >
+                                      <X className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Mouth Scale & Face Lock */}
+                      <div className="space-y-2 pt-1 border-t border-slate-200/60">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                            Lip Size Scale
+                          </label>
+                          <span className="text-[10px] font-mono text-slate-700 font-semibold">
+                            {Math.round((charData.appearance.mouthScale || 1.0) * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.3"
+                          max="2.5"
+                          step="0.05"
+                          value={charData.appearance.mouthScale || 1.0}
+                          onChange={e =>
+                            setCharData(p => ({
+                              ...p,
+                              appearance: { ...p.appearance, mouthScale: parseFloat(e.target.value) },
+                            }))
+                          }
+                          className="w-full accent-amber-600 cursor-pointer"
+                        />
+                      </div>
+
+                      {/* Lip Sync Live Test */}
+                      <button
+                        type="button"
+                        onClick={() => setIsTalkingTest(!isTalkingTest)}
+                        className={`w-full py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer ${
+                          isTalkingTest
+                            ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                            : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'
+                        }`}
+                      >
+                        {isTalkingTest ? <Square className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                        <span>{isTalkingTest ? 'Stop Lip-Sync Test' : 'Test Live Lip-Sync Talk'}</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. EYES ELEMENT (DOWNLOAD & UPLOAD) */}
+                <div>
+                  <button
+                    onClick={() => setOpenLayerSub(openLayerSub === 'eyes' ? null : 'eyes')}
+                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium cursor-pointer"
+                  >
+                    <span className="flex items-center space-x-2">
+                      <span>👁</span>
+                      <span className="font-semibold">Eyes Element</span>
+                    </span>
+                    <div className="flex items-center space-x-1.5">
+                      {charData.appearance.customEyesImage && (
+                        <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 rounded font-bold">Custom</span>
+                      )}
+                      <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'eyes' ? 'rotate-180' : ''}`} />
+                    </div>
+                  </button>
+                  {openLayerSub === 'eyes' && (
+                    <div className="px-4 py-3 bg-slate-50/80 space-y-3 border-t border-slate-100">
+                      <div className="flex items-center space-x-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const svg = exportEyesSvg(charData.appearance);
+                            downloadFile(svg, 'willitoons-eyes-template.svg');
+                          }}
+                          className="flex-1 py-1.5 px-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-semibold text-blue-700 flex items-center justify-center space-x-1 shadow-2xs cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Download Eyes (SVG)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => eyesFileInputRef.current?.click()}
+                          className="py-1.5 px-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-semibold flex items-center space-x-1 cursor-pointer shadow-xs"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>Upload Eyes</span>
+                        </button>
+                        <input
+                          ref={eyesFileInputRef}
+                          type="file"
+                          accept="image/*,.svg"
+                          className="hidden"
+                          onChange={e => {
+                            if (e.target.files?.[0]) {
+                              handleGenericFileUpload(e.target.files[0], dataUrl => {
+                                setCharData(p => ({
+                                  ...p,
+                                  appearance: { ...p.appearance, customEyesImage: dataUrl },
+                                }));
+                              });
+                            }
+                          }}
+                        />
+                      </div>
+
+                      {charData.appearance.customEyesImage && (
+                        <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <img src={charData.appearance.customEyesImage} alt="Custom Eyes" className="w-10 h-6 object-contain bg-white rounded border border-emerald-300" />
+                            <span className="text-[11px] text-emerald-900 font-semibold">Custom Eyes Active</span>
+                          </div>
+                          <button
+                            onClick={() =>
+                              setCharData(p => ({
+                                ...p,
+                                appearance: { ...p.appearance, customEyesImage: undefined },
+                              }))
+                            }
+                            className="text-xs text-red-600 hover:underline cursor-pointer"
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Eyes Scale Slider */}
+                      <div>
+                        <div className="flex justify-between items-center mb-1 text-[11px]">
+                          <span className="text-slate-500 font-medium">Eyes Size Scale:</span>
+                          <span className="font-mono text-slate-700 font-bold">
+                            {Math.round((charData.appearance.customEyesScale || 1.0) * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.5"
+                          max="2.0"
+                          step="0.05"
+                          value={charData.appearance.customEyesScale || 1.0}
+                          onChange={e =>
+                            setCharData(p => ({
+                              ...p,
+                              appearance: { ...p.appearance, customEyesScale: parseFloat(e.target.value) },
+                            }))
+                          }
+                          className="w-full accent-blue-600 cursor-pointer"
+                        />
+                      </div>
+
+                      {/* Stock Eye Style */}
+                      <div>
+                        <div className="text-slate-500 font-medium mb-1 text-[11px]">Stock Eye Expressions:</div>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {['standard', 'kind', 'big', 'determined', 'angry'].map(eye => (
+                            <button
+                              key={eye}
+                              onClick={() =>
+                                setCharData(p => ({
+                                  ...p,
+                                  appearance: { ...p.appearance, eyeType: eye },
+                                }))
+                              }
+                              className={`py-1 capitalize rounded border shadow-xs text-[11px] cursor-pointer ${
+                                charData.appearance.eyeType === eye
+                                  ? 'bg-blue-600 text-white border-blue-600 font-semibold'
+                                  : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
+                              }`}
+                            >
+                              {eye}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. HEAD & FACE ELEMENT (DOWNLOAD & UPLOAD) */}
                 <div>
                   <button
                     onClick={() => setOpenLayerSub(openLayerSub === 'head' ? null : 'head')}
-                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium"
+                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium cursor-pointer"
                   >
                     <span className="flex items-center space-x-2">
                       <span>😊</span>
-                      <span>Head</span>
+                      <span className="font-semibold">Head & Face</span>
                     </span>
-                    <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'head' ? 'rotate-180' : ''}`} />
+                    <div className="flex items-center space-x-1.5">
+                      {charData.appearance.customHeadImage && (
+                        <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 rounded font-bold">Custom</span>
+                      )}
+                      <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'head' ? 'rotate-180' : ''}`} />
+                    </div>
                   </button>
                   {openLayerSub === 'head' && (
                     <div className="px-4 py-3 bg-slate-50/80 space-y-3 border-t border-slate-100">
+                      <div className="flex items-center space-x-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const svg = exportHeadSvg(charData.appearance);
+                            downloadFile(svg, 'willitoons-head-template.svg');
+                          }}
+                          className="flex-1 py-1.5 px-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-semibold text-blue-700 flex items-center justify-center space-x-1 shadow-2xs cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Download Head (SVG)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => headFileInputRef.current?.click()}
+                          className="py-1.5 px-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-semibold flex items-center space-x-1 cursor-pointer shadow-xs"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>Upload Head</span>
+                        </button>
+                        <input
+                          ref={headFileInputRef}
+                          type="file"
+                          accept="image/*,.svg"
+                          className="hidden"
+                          onChange={e => {
+                            if (e.target.files?.[0]) {
+                              handleGenericFileUpload(e.target.files[0], dataUrl => {
+                                setCharData(p => ({
+                                  ...p,
+                                  appearance: { ...p.appearance, customHeadImage: dataUrl },
+                                }));
+                              });
+                            }
+                          }}
+                        />
+                      </div>
+
+                      {charData.appearance.customHeadImage && (
+                        <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <img src={charData.appearance.customHeadImage} alt="Custom Head" className="w-8 h-8 object-contain bg-white rounded border border-emerald-300" />
+                            <span className="text-[11px] text-emerald-900 font-semibold">Custom Head Active</span>
+                          </div>
+                          <button
+                            onClick={() =>
+                              setCharData(p => ({
+                                ...p,
+                                appearance: { ...p.appearance, customHeadImage: undefined },
+                              }))
+                            }
+                            className="text-xs text-red-600 hover:underline cursor-pointer"
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      )}
+
                       <div>
-                        <div className="text-slate-500 font-medium mb-1.5">Skin Tone:</div>
+                        <div className="text-slate-500 font-medium mb-1.5 text-[11px]">Skin Tone:</div>
                         <div className="flex space-x-2">
                           {['#fcd34d', '#f3c59a', '#c68b59', '#b87c4f', '#965935', '#63371f'].map(skin => (
                             <button
@@ -454,7 +978,7 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                                   appearance: { ...p.appearance, skinTone: skin },
                                 }))
                               }
-                              className={`w-6 h-6 rounded-full border-2 transition-transform shadow-xs ${
+                              className={`w-6 h-6 rounded-full border-2 transition-transform shadow-xs cursor-pointer ${
                                 charData.appearance.skinTone === skin ? 'border-blue-600 scale-110' : 'border-transparent'
                               }`}
                               style={{ backgroundColor: skin }}
@@ -462,11 +986,91 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                           ))}
                         </div>
                       </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 4. HAIR ELEMENT (DOWNLOAD & UPLOAD) */}
+                <div>
+                  <button
+                    onClick={() => setOpenLayerSub(openLayerSub === 'hair' ? null : 'hair')}
+                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium cursor-pointer"
+                  >
+                    <span className="flex items-center space-x-2">
+                      <span>💇‍♂️</span>
+                      <span className="font-semibold">Hair Element</span>
+                    </span>
+                    <div className="flex items-center space-x-1.5">
+                      {charData.appearance.customHairImage && (
+                        <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 rounded font-bold">Custom</span>
+                      )}
+                      <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'hair' ? 'rotate-180' : ''}`} />
+                    </div>
+                  </button>
+                  {openLayerSub === 'hair' && (
+                    <div className="px-4 py-3 bg-slate-50/80 space-y-3 border-t border-slate-100">
+                      <div className="flex items-center space-x-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const svg = exportHairSvg(charData.appearance);
+                            downloadFile(svg, 'willitoons-hair-template.svg');
+                          }}
+                          className="flex-1 py-1.5 px-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-semibold text-blue-700 flex items-center justify-center space-x-1 shadow-2xs cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Download Hair (SVG)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => hairFileInputRef.current?.click()}
+                          className="py-1.5 px-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-semibold flex items-center space-x-1 cursor-pointer shadow-xs"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>Upload Hair</span>
+                        </button>
+                        <input
+                          ref={hairFileInputRef}
+                          type="file"
+                          accept="image/*,.svg"
+                          className="hidden"
+                          onChange={e => {
+                            if (e.target.files?.[0]) {
+                              handleGenericFileUpload(e.target.files[0], dataUrl => {
+                                setCharData(p => ({
+                                  ...p,
+                                  appearance: { ...p.appearance, customHairImage: dataUrl },
+                                }));
+                              });
+                            }
+                          }}
+                        />
+                      </div>
+
+                      {charData.appearance.customHairImage && (
+                        <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <img src={charData.appearance.customHairImage} alt="Custom Hair" className="w-8 h-8 object-contain bg-white rounded border border-emerald-300" />
+                            <span className="text-[11px] text-emerald-900 font-semibold">Custom Hair Active</span>
+                          </div>
+                          <button
+                            onClick={() =>
+                              setCharData(p => ({
+                                ...p,
+                                appearance: { ...p.appearance, customHairImage: undefined },
+                              }))
+                            }
+                            className="text-xs text-red-600 hover:underline cursor-pointer"
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      )}
 
                       <div>
-                        <div className="text-slate-500 font-medium mb-1.5">Hair Style:</div>
+                        <div className="text-slate-500 font-medium mb-1.5 text-[11px]">Hair Style:</div>
                         <div className="grid grid-cols-3 gap-1.5">
-                          {['short', 'bun', 'braids', 'turban', 'crest', 'none'].map(hair => (
+                          {['short', 'bun', 'braids', 'none'].map(hair => (
                             <button
                               key={hair}
                               onClick={() =>
@@ -475,7 +1079,7 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                                   appearance: { ...p.appearance, hairStyle: hair },
                                 }))
                               }
-                              className={`py-1 capitalize text-center rounded border shadow-xs ${
+                              className={`py-1 capitalize text-center rounded border shadow-xs cursor-pointer text-[11px] ${
                                 charData.appearance.hairStyle === hair
                                   ? 'bg-blue-600 text-white border-blue-600 font-semibold'
                                   : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
@@ -490,439 +1094,85 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                   )}
                 </div>
 
-                {/* Eyes */}
-                <div>
-                  <button
-                    onClick={() => setOpenLayerSub(openLayerSub === 'eyes' ? null : 'eyes')}
-                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium"
-                  >
-                    <span className="flex items-center space-x-2">
-                      <span>👁</span>
-                      <span>Eyes</span>
-                    </span>
-                    <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'eyes' ? 'rotate-180' : ''}`} />
-                  </button>
-                  {openLayerSub === 'eyes' && (
-                    <div className="px-4 py-3 bg-slate-50/80 space-y-2 border-t border-slate-100">
-                      <div className="grid grid-cols-2 gap-1.5">
-                        {['standard', 'kind', 'big', 'determined', 'angry'].map(eye => (
-                          <button
-                            key={eye}
-                            onClick={() =>
-                              setCharData(p => ({
-                                ...p,
-                                appearance: { ...p.appearance, eyeType: eye },
-                              }))
-                            }
-                            className={`py-1.5 capitalize rounded border shadow-xs ${
-                              charData.appearance.eyeType === eye
-                                ? 'bg-blue-600 text-white border-blue-600 font-semibold'
-                                : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
-                            }`}
-                          >
-                            {eye}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Lips / Mouth Formats */}
-                <div>
-                  <button
-                    onClick={() => setOpenLayerSub(openLayerSub === 'lips' ? null : 'lips')}
-                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium"
-                  >
-                    <span className="flex items-center space-x-2">
-                      <span>👄</span>
-                      <span>Lips / Mouth (Format 1 & 2)</span>
-                    </span>
-                    <div className="flex items-center space-x-1.5">
-                      <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                        {charData.appearance.lipsFormat === 'format2' ? 'Format 2 (Realistic)' : 'Format 1 (Classic)'}
-                      </span>
-                      <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'lips' ? 'rotate-180' : ''}`} />
-                    </div>
-                  </button>
-                  {openLayerSub === 'lips' && (
-                    <div className="px-4 py-3 bg-slate-50/90 space-y-3.5 border-t border-slate-100 text-xs">
-                      {/* Format Switcher */}
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
-                          Select Lips Format
-                        </label>
-                        <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-200/70 rounded-lg">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setCharData(p => ({
-                                ...p,
-                                appearance: { ...p.appearance, lipsFormat: 'format1' },
-                              }))
-                            }
-                            className={`py-1.5 px-2 rounded-md font-semibold text-center transition-all cursor-pointer ${
-                              charData.appearance.lipsFormat !== 'format2'
-                                ? 'bg-white text-blue-700 shadow-xs'
-                                : 'text-slate-600 hover:text-slate-900'
-                            }`}
-                          >
-                            Format 1: Classic
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setCharData(p => ({
-                                ...p,
-                                appearance: {
-                                  ...p.appearance,
-                                  lipsFormat: 'format2',
-                                  lipColor: p.appearance.lipColor || '#8D5538',
-                                },
-                              }))
-                            }
-                            className={`py-1.5 px-2 rounded-md font-semibold text-center transition-all cursor-pointer flex items-center justify-center space-x-1 ${
-                              charData.appearance.lipsFormat === 'format2'
-                                ? 'bg-white text-blue-700 shadow-xs'
-                                : 'text-slate-600 hover:text-slate-900'
-                            }`}
-                          >
-                            <span>Format 2: Realistic</span>
-                            <span className="text-[9px] bg-amber-500 text-white px-1 py-0.2 rounded-full">New</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* FORMAT 1 CONTROLS */}
-                      {charData.appearance.lipsFormat !== 'format2' && (
-                        <div className="space-y-2">
-                          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
-                            Classic Cartoon Mouth Shape
-                          </label>
-                          <div className="grid grid-cols-2 gap-1.5">
-                            {['idle', 'smile', 'talkA', 'angry'].map(mouth => (
-                              <button
-                                key={mouth}
-                                type="button"
-                                onClick={() =>
-                                  setCharData(p => ({
-                                    ...p,
-                                    appearance: { ...p.appearance, mouthType: mouth },
-                                  }))
-                                }
-                                className={`py-1.5 capitalize rounded border shadow-xs transition-colors cursor-pointer ${
-                                  charData.appearance.mouthType === mouth
-                                    ? 'bg-blue-600 text-white border-blue-600 font-semibold'
-                                    : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
-                                }`}
-                              >
-                                {mouth}
-                              </button>
-                            ))}
-                          </div>
-                          <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-[11px] leading-tight">
-                            💡 Switch to <strong>Format 2</strong> to use realistic shaded lips with teeth & tongue, or upload custom mouth replacement images!
-                          </div>
-                        </div>
-                      )}
-
-                      {/* FORMAT 2 CONTROLS */}
-                      {charData.appearance.lipsFormat === 'format2' && (
-                        <div className="space-y-3">
-                          {/* Viseme Selection Grid */}
-                          <div>
-                            <div className="flex items-center justify-between mb-1">
-                              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                                Viseme / Mouth Shape
-                              </label>
-                              <span className="text-[10px] text-slate-400">7 Expressive Shapes</span>
-                            </div>
-                            <div className="grid grid-cols-1 gap-1.5 max-h-52 overflow-y-auto pr-1">
-                              {VISEME_CONFIGS.map(v => {
-                                const isCurrent =
-                                  charData.appearance.mouthType === `mouth${v.id}` ||
-                                  (v.id === 'X' && (charData.appearance.mouthType === 'idle' || charData.appearance.mouthType === 'mouthX')) ||
-                                  (v.id === 'A' && charData.appearance.mouthType === 'smile') ||
-                                  (v.id === 'B' && charData.appearance.mouthType === 'talkA') ||
-                                  (v.id === 'D' && charData.appearance.mouthType === 'angry') ||
-                                  (v.id === 'E' && charData.appearance.mouthType === 'talkO');
-                                const hasCustom = !!charData.appearance.customMouthImages?.[v.id];
-
-                                return (
-                                  <button
-                                    key={v.id}
-                                    type="button"
-                                    onClick={() => {
-                                      setActiveUploadViseme(v.id);
-                                      setCharData(p => ({
-                                        ...p,
-                                        appearance: {
-                                          ...p.appearance,
-                                          mouthType: `mouth${v.id}`,
-                                        },
-                                      }));
-                                    }}
-                                    className={`flex items-center justify-between p-1.5 rounded-lg border transition-all text-left cursor-pointer ${
-                                      isCurrent
-                                        ? 'bg-blue-50 border-blue-500 text-blue-900 shadow-xs'
-                                        : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700'
-                                    }`}
-                                  >
-                                    <div className="flex items-center space-x-2">
-                                      <MouthPreviewThumbnail
-                                        viseme={v.id}
-                                        format="format2"
-                                        lipColor={charData.appearance.lipColor || '#8D5538'}
-                                        customImage={charData.appearance.customMouthImages?.[v.id]}
-                                        className="w-10 h-6 bg-slate-100/70 rounded p-0.5"
-                                      />
-                                      <div>
-                                        <div className="flex items-center space-x-1.5">
-                                          <span className="font-bold text-[11px]">{v.label}</span>
-                                          {hasCustom && (
-                                            <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 rounded font-semibold">
-                                              Custom PNG
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div className="text-[10px] text-slate-500 line-clamp-1">{v.desc}</div>
-                                      </div>
-                                    </div>
-                                    {isCurrent && <Check className="w-4 h-4 text-blue-600 shrink-0" />}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-
-                          {/* Lip Color & Presets */}
-                          <div>
-                            <div className="flex items-center justify-between mb-1.5">
-                              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                                Lip Shade / Tint
-                              </label>
-                              <span className="text-[10px] text-slate-400 font-mono">
-                                {charData.appearance.lipColor || '#8D5538'}
-                              </span>
-                            </div>
-                            <div className="flex items-center space-x-2">
-                              {[
-                                { name: 'Natural Brown', color: '#8D5538' },
-                                { name: 'Deep Mocha', color: '#673520' },
-                                { name: 'Terracotta', color: '#A0522D' },
-                                { name: 'Skin Match', color: charData.appearance.skinTone || '#c68b59' },
-                                { name: 'Warm Coral', color: '#B85D65' },
-                                { name: 'Classic Wine', color: '#881337' },
-                              ].map(shade => (
-                                <button
-                                  key={shade.color}
-                                  type="button"
-                                  title={shade.name}
-                                  onClick={() =>
-                                    setCharData(p => ({
-                                      ...p,
-                                      appearance: { ...p.appearance, lipColor: shade.color },
-                                    }))
-                                  }
-                                  className={`w-6 h-6 rounded-full border-2 transition-transform cursor-pointer ${
-                                    (charData.appearance.lipColor || '#8D5538') === shade.color
-                                      ? 'scale-110 border-blue-600 shadow-xs'
-                                      : 'border-white hover:scale-105 shadow-xs'
-                                  }`}
-                                  style={{ backgroundColor: shade.color }}
-                                />
-                              ))}
-                              <input
-                                type="color"
-                                value={charData.appearance.lipColor || '#8D5538'}
-                                onChange={e =>
-                                  setCharData(p => ({
-                                    ...p,
-                                    appearance: { ...p.appearance, lipColor: e.target.value },
-                                  }))
-                                }
-                                className="w-6 h-6 rounded border border-slate-300 p-0 cursor-pointer"
-                                title="Custom Color"
-                              />
-                            </div>
-                          </div>
-
-                          {/* Mouth / Lip Scale Slider (Fully anchored position at 50, 22.5) */}
-                          <div className="pt-2 border-t border-slate-200">
-                            <div className="flex items-center justify-between mb-1">
-                              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                                Mouth Size / Scale
-                              </label>
-                              <span className="text-[10px] font-mono text-slate-700 font-semibold">
-                                {Math.round((charData.appearance.mouthScale || 1) * 100)}%
-                              </span>
-                            </div>
-                            <input
-                              type="range"
-                              min="0.3"
-                              max="3.0"
-                              step="0.05"
-                              value={charData.appearance.mouthScale || 1}
-                              onChange={e => {
-                                const newScale = parseFloat(e.target.value);
-                                setCharData(p => ({
-                                  ...p,
-                                  appearance: { ...p.appearance, mouthScale: newScale },
-                                }));
-                              }}
-                              className="w-full accent-blue-600 cursor-pointer h-1.5"
-                            />
-                            <div className="flex justify-between text-[9px] text-slate-400 mt-0.5">
-                              <span>30% Small</span>
-                              <span>100% (Default)</span>
-                              <span>300% Large</span>
-                            </div>
-                          </div>
-
-                          {/* Live Lip-Sync Talking Test */}
-                          <div className="pt-1">
-                            <button
-                              type="button"
-                              onClick={() => setIsTalkingTest(p => !p)}
-                              className={`w-full py-2 px-3 rounded-lg font-semibold flex items-center justify-center space-x-2 transition-colors cursor-pointer shadow-xs ${
-                                isTalkingTest
-                                  ? 'bg-amber-600 hover:bg-amber-500 text-white'
-                                  : 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                              }`}
-                            >
-                              {isTalkingTest ? (
-                                <>
-                                  <Square className="w-3.5 h-3.5 fill-white" />
-                                  <span>Stop Lip Sync Test</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Play className="w-3.5 h-3.5 fill-white" />
-                                  <span>Test Live Lip-Sync (Talk Animation)</span>
-                                </>
-                              )}
-                            </button>
-                          </div>
-
-                          {/* Custom Mouth Replacement (User Upload) */}
-                          <div className="pt-1 border-t border-slate-200">
-                            <div className="flex items-center justify-between mb-1.5">
-                              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                                Custom Mouth Replacement
-                              </label>
-                              {charData.appearance.customMouthImages &&
-                                Object.keys(charData.appearance.customMouthImages).length > 0 && (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setCharData(p => ({
-                                        ...p,
-                                        appearance: { ...p.appearance, customMouthImages: {} },
-                                      }))
-                                    }
-                                    className="text-[10px] text-red-600 hover:text-red-700 underline cursor-pointer"
-                                  >
-                                    Reset All Custom
-                                  </button>
-                                )}
-                            </div>
-
-                            {/* Dropzone & file selector */}
-                            <div
-                              onDragOver={e => {
-                                e.preventDefault();
-                                setIsDraggingMouth(true);
-                              }}
-                              onDragLeave={() => setIsDraggingMouth(false)}
-                              onDrop={e => {
-                                e.preventDefault();
-                                setIsDraggingMouth(false);
-                                if (e.dataTransfer.files) {
-                                  handleMouthFilesUpload(e.dataTransfer.files);
-                                }
-                              }}
-                              onClick={() => mouthFileInputRef.current?.click()}
-                              className={`p-3 border-2 border-dashed rounded-lg text-center cursor-pointer transition-colors ${
-                                isDraggingMouth
-                                  ? 'border-blue-500 bg-blue-50 text-blue-700'
-                                  : 'border-slate-300 hover:border-blue-400 bg-white hover:bg-slate-50 text-slate-600'
-                              }`}
-                            >
-                              <FileUp className="w-5 h-5 mx-auto mb-1 text-slate-400" />
-                              <div className="font-semibold text-[11px] text-slate-700">
-                                Click or Drag & Drop Mouth PNGs
-                              </div>
-                              <div className="text-[10px] text-slate-400 mt-0.5">
-                                Replaces viseme {activeUploadViseme} (or auto-matches Mouth_A, Mouth_X, etc.)
-                              </div>
-                              <input
-                                ref={mouthFileInputRef}
-                                type="file"
-                                accept="image/*"
-                                multiple
-                                onChange={e => {
-                                  if (e.target.files) {
-                                    handleMouthFilesUpload(e.target.files);
-                                  }
-                                }}
-                                className="hidden"
-                              />
-                            </div>
-
-                            {/* Replaced thumbnail status if active viseme has custom image */}
-                            {charData.appearance.customMouthImages?.[activeUploadViseme] && (
-                              <div className="mt-2 flex items-center justify-between p-2 bg-emerald-50 border border-emerald-200 rounded-lg">
-                                <div className="flex items-center space-x-2">
-                                  <img
-                                    src={charData.appearance.customMouthImages[activeUploadViseme]}
-                                    alt="Custom mouth"
-                                    className="w-10 h-6 object-contain rounded bg-white border border-emerald-300"
-                                  />
-                                  <span className="text-[11px] text-emerald-900 font-semibold">
-                                    Viseme {activeUploadViseme} is replaced
-                                  </span>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setCharData(p => {
-                                      const next = { ...(p.appearance.customMouthImages || {}) };
-                                      delete next[activeUploadViseme];
-                                      return {
-                                        ...p,
-                                        appearance: { ...p.appearance, customMouthImages: next },
-                                      };
-                                    });
-                                  }}
-                                  className="text-[10px] text-red-600 hover:text-red-700 font-semibold cursor-pointer"
-                                >
-                                  Revert
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Body / Clothing */}
+                {/* 5. BODY / TORSO ELEMENT (DOWNLOAD & UPLOAD) */}
                 <div>
                   <button
                     onClick={() => setOpenLayerSub(openLayerSub === 'body' ? null : 'body')}
-                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium"
+                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium cursor-pointer"
                   >
                     <span className="flex items-center space-x-2">
                       <span>👕</span>
-                      <span>Body / Clothing</span>
+                      <span className="font-semibold">Body & Torso</span>
                     </span>
-                    <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'body' ? 'rotate-180' : ''}`} />
+                    <div className="flex items-center space-x-1.5">
+                      {charData.appearance.customBodyImage && (
+                        <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 rounded font-bold">Custom</span>
+                      )}
+                      <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'body' ? 'rotate-180' : ''}`} />
+                    </div>
                   </button>
                   {openLayerSub === 'body' && (
                     <div className="px-4 py-3 bg-slate-50/80 space-y-3 border-t border-slate-100">
+                      <div className="flex items-center space-x-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const svg = exportBodySvg(charData.appearance);
+                            downloadFile(svg, 'willitoons-body-template.svg');
+                          }}
+                          className="flex-1 py-1.5 px-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-semibold text-blue-700 flex items-center justify-center space-x-1 shadow-2xs cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Download Body (SVG)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => bodyFileInputRef.current?.click()}
+                          className="py-1.5 px-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-semibold flex items-center space-x-1 cursor-pointer shadow-xs"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>Upload Body</span>
+                        </button>
+                        <input
+                          ref={bodyFileInputRef}
+                          type="file"
+                          accept="image/*,.svg"
+                          className="hidden"
+                          onChange={e => {
+                            if (e.target.files?.[0]) {
+                              handleGenericFileUpload(e.target.files[0], dataUrl => {
+                                setCharData(p => ({
+                                  ...p,
+                                  appearance: { ...p.appearance, customBodyImage: dataUrl },
+                                }));
+                              });
+                            }
+                          }}
+                        />
+                      </div>
+
+                      {charData.appearance.customBodyImage && (
+                        <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <img src={charData.appearance.customBodyImage} alt="Custom Body" className="w-8 h-8 object-contain bg-white rounded border border-emerald-300" />
+                            <span className="text-[11px] text-emerald-900 font-semibold">Custom Body Active</span>
+                          </div>
+                          <button
+                            onClick={() =>
+                              setCharData(p => ({
+                                ...p,
+                                appearance: { ...p.appearance, customBodyImage: undefined },
+                              }))
+                            }
+                            className="text-xs text-red-600 hover:underline cursor-pointer"
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      )}
+
                       <div>
-                        <div className="text-slate-500 font-medium mb-1.5">Outfit Style:</div>
+                        <div className="text-slate-500 font-medium mb-1.5 text-[11px]">Outfit Style:</div>
                         <div className="grid grid-cols-3 gap-1.5">
                           {['vest', 'kurta', 'saree', 'tshirt', 'royal'].map(bType => (
                             <button
@@ -933,7 +1183,7 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                                   appearance: { ...p.appearance, bodyType: bType },
                                 }))
                               }
-                              className={`py-1 capitalize rounded border shadow-xs ${
+                              className={`py-1 capitalize rounded border shadow-xs cursor-pointer text-[11px] ${
                                 charData.appearance.bodyType === bType
                                   ? 'bg-blue-600 text-white border-blue-600 font-semibold'
                                   : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
@@ -946,7 +1196,7 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                       </div>
 
                       <div>
-                        <div className="text-slate-500 font-medium mb-1.5">Garment Color:</div>
+                        <div className="text-slate-500 font-medium mb-1.5 text-[11px]">Garment Color:</div>
                         <div className="flex space-x-2">
                           {['#f1ede4', '#f59e0b', '#dc2626', '#2563eb', '#15803d', '#7c3aed', '#18181b'].map(c => (
                             <button
@@ -957,7 +1207,7 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                                   appearance: { ...p.appearance, clothingColor: c },
                                 }))
                               }
-                              className={`w-5 h-5 rounded-full border shadow-xs ${
+                              className={`w-5 h-5 rounded-full border shadow-xs cursor-pointer ${
                                 charData.appearance.clothingColor === c ? 'border-slate-900 scale-125' : 'border-transparent'
                               }`}
                               style={{ backgroundColor: c }}
@@ -969,22 +1219,208 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                   )}
                 </div>
 
-                {/* Legs */}
+                {/* 6. HANDS ELEMENT (DOWNLOAD & UPLOAD LEFT/RIGHT) */}
+                <div>
+                  <button
+                    onClick={() => setOpenLayerSub(openLayerSub === 'hands' ? null : 'hands')}
+                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium cursor-pointer"
+                  >
+                    <span className="flex items-center space-x-2">
+                      <span>✋</span>
+                      <span className="font-semibold">Hands & Palms</span>
+                    </span>
+                    <div className="flex items-center space-x-1.5">
+                      {(charData.appearance.customLeftHandImage || charData.appearance.customRightHandImage) && (
+                        <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 rounded font-bold">Custom</span>
+                      )}
+                      <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'hands' ? 'rotate-180' : ''}`} />
+                    </div>
+                  </button>
+                  {openLayerSub === 'hands' && (
+                    <div className="px-4 py-3 bg-slate-50/80 space-y-3 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const svg = exportHandSvg('left', charData.appearance.skinTone);
+                          downloadFile(svg, 'willitoons-hand-template.svg');
+                        }}
+                        className="w-full py-1.5 px-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-semibold text-blue-700 flex items-center justify-center space-x-1 shadow-2xs cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Download Hand Template (SVG)</span>
+                      </button>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <div className="text-[11px] text-slate-500 font-medium mb-1">Left Hand:</div>
+                          <button
+                            type="button"
+                            onClick={() => handLFileInputRef.current?.click()}
+                            className="w-full py-1.5 px-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 rounded-md text-[11px] font-semibold flex items-center justify-center space-x-1 cursor-pointer"
+                          >
+                            <Upload className="w-3 h-3" />
+                            <span>Upload L</span>
+                          </button>
+                          <input
+                            ref={handLFileInputRef}
+                            type="file"
+                            accept="image/*,.svg"
+                            className="hidden"
+                            onChange={e => {
+                              if (e.target.files?.[0]) {
+                                handleGenericFileUpload(e.target.files[0], dataUrl => {
+                                  setCharData(p => ({
+                                    ...p,
+                                    appearance: { ...p.appearance, customLeftHandImage: dataUrl },
+                                  }));
+                                });
+                              }
+                            }}
+                          />
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] text-slate-500 font-medium mb-1">Right Hand:</div>
+                          <button
+                            type="button"
+                            onClick={() => handRFileInputRef.current?.click()}
+                            className="w-full py-1.5 px-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 rounded-md text-[11px] font-semibold flex items-center justify-center space-x-1 cursor-pointer"
+                          >
+                            <Upload className="w-3 h-3" />
+                            <span>Upload R</span>
+                          </button>
+                          <input
+                            ref={handRFileInputRef}
+                            type="file"
+                            accept="image/*,.svg"
+                            className="hidden"
+                            onChange={e => {
+                              if (e.target.files?.[0]) {
+                                handleGenericFileUpload(e.target.files[0], dataUrl => {
+                                  setCharData(p => ({
+                                    ...p,
+                                    appearance: { ...p.appearance, customRightHandImage: dataUrl },
+                                  }));
+                                });
+                              }
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      {(charData.appearance.customLeftHandImage || charData.appearance.customRightHandImage) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCharData(p => ({
+                              ...p,
+                              appearance: {
+                                ...p.appearance,
+                                customLeftHandImage: undefined,
+                                customRightHandImage: undefined,
+                              },
+                            }))
+                          }
+                          className="w-full py-1 text-center text-xs text-red-600 hover:underline cursor-pointer"
+                        >
+                          Reset Custom Hands
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* 7. FEET & LEGS ELEMENT (DOWNLOAD & UPLOAD) */}
                 <div>
                   <button
                     onClick={() => setOpenLayerSub(openLayerSub === 'legs' ? null : 'legs')}
-                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium"
+                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium cursor-pointer"
                   >
                     <span className="flex items-center space-x-2">
                       <span>👖</span>
-                      <span>Legs</span>
+                      <span className="font-semibold">Legs & Feet</span>
                     </span>
-                    <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'legs' ? 'rotate-180' : ''}`} />
+                    <div className="flex items-center space-x-1.5">
+                      {(charData.appearance.customLeftFootImage || charData.appearance.customRightFootImage) && (
+                        <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 rounded font-bold">Custom</span>
+                      )}
+                      <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'legs' ? 'rotate-180' : ''}`} />
+                    </div>
                   </button>
                   {openLayerSub === 'legs' && (
                     <div className="px-4 py-3 bg-slate-50/80 space-y-3 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const svg = exportFeetSvg('left', '#78350f');
+                          downloadFile(svg, 'willitoons-feet-template.svg');
+                        }}
+                        className="w-full py-1.5 px-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-semibold text-blue-700 flex items-center justify-center space-x-1 shadow-2xs cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Download Feet (SVG)</span>
+                      </button>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <div className="text-[11px] text-slate-500 font-medium mb-1">Left Foot:</div>
+                          <button
+                            type="button"
+                            onClick={() => footLFileInputRef.current?.click()}
+                            className="w-full py-1.5 px-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 rounded-md text-[11px] font-semibold flex items-center justify-center space-x-1 cursor-pointer"
+                          >
+                            <Upload className="w-3 h-3" />
+                            <span>Upload L</span>
+                          </button>
+                          <input
+                            ref={footLFileInputRef}
+                            type="file"
+                            accept="image/*,.svg"
+                            className="hidden"
+                            onChange={e => {
+                              if (e.target.files?.[0]) {
+                                handleGenericFileUpload(e.target.files[0], dataUrl => {
+                                  setCharData(p => ({
+                                    ...p,
+                                    appearance: { ...p.appearance, customLeftFootImage: dataUrl },
+                                  }));
+                                });
+                              }
+                            }}
+                          />
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] text-slate-500 font-medium mb-1">Right Foot:</div>
+                          <button
+                            type="button"
+                            onClick={() => footRFileInputRef.current?.click()}
+                            className="w-full py-1.5 px-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 rounded-md text-[11px] font-semibold flex items-center justify-center space-x-1 cursor-pointer"
+                          >
+                            <Upload className="w-3 h-3" />
+                            <span>Upload R</span>
+                          </button>
+                          <input
+                            ref={footRFileInputRef}
+                            type="file"
+                            accept="image/*,.svg"
+                            className="hidden"
+                            onChange={e => {
+                              if (e.target.files?.[0]) {
+                                handleGenericFileUpload(e.target.files[0], dataUrl => {
+                                  setCharData(p => ({
+                                    ...p,
+                                    appearance: { ...p.appearance, customRightFootImage: dataUrl },
+                                  }));
+                                });
+                              }
+                            }}
+                          />
+                        </div>
+                      </div>
+
                       <div>
-                        <div className="text-slate-500 font-medium mb-1.5">Lower Garment:</div>
+                        <div className="text-slate-500 font-medium mb-1 text-[11px]">Lower Garment:</div>
                         <div className="grid grid-cols-2 gap-1.5">
                           {['lungi', 'dhoti', 'pants', 'skirt'].map(lType => (
                             <button
@@ -995,7 +1431,7 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                                   appearance: { ...p.appearance, legsType: lType },
                                 }))
                               }
-                              className={`py-1 capitalize rounded border shadow-xs ${
+                              className={`py-1 capitalize rounded border shadow-xs cursor-pointer text-[11px] ${
                                 charData.appearance.legsType === lType
                                   ? 'bg-blue-600 text-white border-blue-600 font-semibold'
                                   : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
@@ -1006,130 +1442,32 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                           ))}
                         </div>
                       </div>
-
-                      <div>
-                        <div className="text-slate-500 font-medium mb-1.5">Color:</div>
-                        <div className="flex space-x-2">
-                          {['#609a9e', '#0284c7', '#d97706', '#991b1b', '#1e293b', '#6b21a8'].map(c => (
-                            <button
-                              key={c}
-                              onClick={() =>
-                                setCharData(p => ({
-                                  ...p,
-                                  appearance: { ...p.appearance, legsColor: c },
-                                }))
-                              }
-                              className={`w-5 h-5 rounded-full border shadow-xs ${
-                                charData.appearance.legsColor === c ? 'border-slate-900 scale-125' : 'border-transparent'
-                              }`}
-                              style={{ backgroundColor: c }}
-                            />
-                          ))}
-                        </div>
-                      </div>
                     </div>
                   )}
                 </div>
 
-                {/* Additionals (Pagri, Mustache, Tilak) */}
-                <div>
-                  <button
-                    onClick={() => setOpenLayerSub(openLayerSub === 'additionals' ? null : 'additionals')}
-                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-slate-700 font-medium"
-                  >
-                    <span className="flex items-center space-x-2">
-                      <span>✋</span>
-                      <span>Additionals</span>
-                    </span>
-                    <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${openLayerSub === 'additionals' ? 'rotate-180' : ''}`} />
-                  </button>
-                  {openLayerSub === 'additionals' && (
-                    <div className="px-4 py-3 bg-slate-50/80 space-y-3 border-t border-slate-100">
-                      <div>
-                        <div className="text-slate-500 font-medium mb-1">Pagri / Turban:</div>
-                        <button
-                          onClick={() =>
-                            setCharData(p => ({
-                              ...p,
-                              appearance: {
-                                ...p.appearance,
-                                additionalHeadwear: p.appearance.additionalHeadwear === 'turban' ? 'none' : 'turban',
-                              },
-                            }))
-                          }
-                          className={`w-full py-1 rounded border shadow-xs ${
-                            charData.appearance.additionalHeadwear === 'turban'
-                              ? 'bg-amber-600 text-white border-amber-600 font-semibold'
-                              : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
-                          }`}
-                        >
-                          {charData.appearance.additionalHeadwear === 'turban' ? 'Turban Active' : 'No Turban'}
-                        </button>
-                      </div>
-
-                      <div>
-                        <div className="text-slate-500 font-medium mb-1">Mustache:</div>
-                        <button
-                          onClick={() =>
-                            setCharData(p => ({
-                              ...p,
-                              appearance: {
-                                ...p.appearance,
-                                additionalFacialHair: p.appearance.additionalFacialHair === 'mustache' ? 'none' : 'mustache',
-                              },
-                            }))
-                          }
-                          className={`w-full py-1 rounded border shadow-xs ${
-                            charData.appearance.additionalFacialHair === 'mustache'
-                              ? 'bg-blue-600 text-white border-blue-600 font-semibold'
-                              : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
-                          }`}
-                        >
-                          {charData.appearance.additionalFacialHair === 'mustache' ? 'Mustache Active' : 'Clean Shaven'}
-                        </button>
-                      </div>
-
-                      <div>
-                        <div className="text-slate-500 font-medium mb-1">Tilak / Bindi:</div>
-                        <button
-                          onClick={() =>
-                            setCharData(p => ({
-                              ...p,
-                              appearance: {
-                                ...p.appearance,
-                                additionalAccessories: p.appearance.additionalAccessories === 'tilak' ? 'none' : 'tilak',
-                              },
-                            }))
-                          }
-                          className={`w-full py-1 rounded border shadow-xs ${
-                            charData.appearance.additionalAccessories === 'tilak'
-                              ? 'bg-red-600 text-white border-red-600 font-semibold'
-                              : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
-                          }`}
-                        >
-                          {charData.appearance.additionalAccessories === 'tilak' ? 'Tilak On Forehead' : 'No Tilak'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
               </div>
             </div>
+
           </div>
 
-          {/* CENTER CANVAS: DOTTED RIGGING STAGE WITH SKELETON BONES */}
-          <div className="flex-1 relative flex flex-col bg-slate-100/70 overflow-hidden">
+          {/* CENTER CANVAS: DOTTED RIGGING STAGE WITH SKELETON BONES & INTERACTIVE PAN/ZOOM */}
+          <div className="flex-1 relative flex flex-col bg-slate-100/80 overflow-hidden select-none">
             
-            {/* Top Toolbar above character (Lock, Upload, Reset, Download, Delete, Center View) */}
-            <div className="flex items-center justify-center space-x-2 py-2 border-b border-slate-200 bg-white/90 backdrop-blur text-xs">
-              <button className="flex items-center space-x-1 px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 rounded-lg border border-slate-200 transition-colors cursor-pointer shadow-xs">
-                <Lock className="w-3.5 h-3.5 text-slate-500" />
-                <span>Lock</span>
+            {/* Top Toolbar above character */}
+            <div className="flex items-center justify-center space-x-2 py-2 border-b border-slate-200 bg-white/95 backdrop-blur text-xs">
+              <button
+                onClick={() => toggleLockPart('skeleton')}
+                className={`flex items-center space-x-1.5 px-3 py-1 rounded-lg border transition-colors cursor-pointer shadow-xs ${
+                  isSkeletonLocked
+                    ? 'bg-amber-100 text-amber-900 border-amber-300 font-bold'
+                    : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+                }`}
+              >
+                {isSkeletonLocked ? <Lock className="w-3.5 h-3.5 text-amber-600" /> : <Unlock className="w-3.5 h-3.5 text-slate-400" />}
+                <span>{isSkeletonLocked ? 'Locked (Pose Protected)' : 'Lock Pose'}</span>
               </button>
-              <button className="flex items-center space-x-1 px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 rounded-lg border border-slate-200 transition-colors cursor-pointer shadow-xs">
-                <Upload className="w-3.5 h-3.5 text-slate-500" />
-                <span>Upload</span>
-              </button>
+
               <button
                 onClick={handleResetPose}
                 title="Reset Skeleton Joints to Default Standing Pose"
@@ -1138,6 +1476,7 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                 <RotateCcw className="w-3.5 h-3.5 text-amber-500" />
                 <span>Reset Pose</span>
               </button>
+
               <button
                 onClick={() => {
                   const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(charData, null, 2));
@@ -1149,15 +1488,9 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                 className="flex items-center space-x-1 px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 rounded-lg border border-slate-200 transition-colors cursor-pointer shadow-xs"
               >
                 <Download className="w-3.5 h-3.5 text-blue-600" />
-                <span>Download</span>
+                <span>Download Rig</span>
               </button>
-              <button
-                onClick={handleResetPose}
-                className="flex items-center space-x-1 px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 rounded-lg border border-slate-200 transition-colors cursor-pointer shadow-xs"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-red-500" />
-                <span>Delete</span>
-              </button>
+
               <button
                 onClick={handleResetView}
                 title="Reset Zoom and Pan (Center View)"
@@ -1168,20 +1501,20 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
               </button>
             </div>
 
-            {/* Dotted Grid Canvas with Pan & Zoom */}
+            {/* Interactive Canvas Viewport */}
             <div
-              className={`relative flex-1 flex items-center justify-center canvas-grid-dots overflow-hidden select-none ${
-                isPanning
-                  ? 'cursor-grabbing'
-                  : panToolActive || spacebarDown
-                  ? 'cursor-grab'
-                  : 'cursor-default'
+              className={`flex-1 relative flex items-center justify-center overflow-hidden ${
+                panToolActive || spacebarDown
+                  ? 'cursor-grab active:cursor-grabbing'
+                  : ''
               }`}
+              style={{
+                backgroundImage: 'radial-gradient(#cbd5e1 1.2px, transparent 1.2px)',
+                backgroundSize: '24px 24px',
+              }}
               onMouseDown={e => {
-                // Allow panning if pan tool is active, spacebar is pressed, middle mouse button, or clicking background
                 const isDirectCanvasClick = e.target === e.currentTarget;
                 if (panToolActive || spacebarDown || e.button === 1 || isDirectCanvasClick) {
-                  e.preventDefault();
                   setIsPanning(true);
                   panStartRef.current = {
                     mouseX: e.clientX,
@@ -1191,121 +1524,53 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                   };
                 }
               }}
-              onTouchStart={e => {
-                if (e.touches.length === 1 && (panToolActive || e.target === e.currentTarget)) {
-                  setIsPanning(true);
-                  panStartRef.current = {
-                    mouseX: e.touches[0].clientX,
-                    mouseY: e.touches[0].clientY,
-                    startPanX: panOffset.x,
-                    startPanY: panOffset.y,
-                  };
-                }
-              }}
-              onTouchMove={e => {
-                if (isPanning && e.touches.length === 1) {
-                  const dx = e.touches[0].clientX - panStartRef.current.mouseX;
-                  const dy = e.touches[0].clientY - panStartRef.current.mouseY;
-                  setPanOffset({
-                    x: Math.round(panStartRef.current.startPanX + dx),
-                    y: Math.round(panStartRef.current.startPanY + dy),
-                  });
-                }
-              }}
-              onTouchEnd={() => setIsPanning(false)}
               onWheel={e => {
                 if (e.ctrlKey || e.metaKey) {
                   e.preventDefault();
-                  const delta = e.deltaY < 0 ? 0.15 : -0.15;
-                  setZoomLevel(z => Math.max(0.4, Math.min(3.0, Number((z + delta).toFixed(2)))));
+                  const delta = e.deltaY > 0 ? -0.1 : 0.1;
+                  setZoomLevel(z => Math.min(3.5, Math.max(0.25, Number((z + delta).toFixed(2)))));
                 } else {
-                  // Trackpad or shift scroll pans canvas
                   setPanOffset(p => ({
-                    x: Math.round(p.x - e.deltaX),
-                    y: Math.round(p.y - e.deltaY),
+                    x: Math.round(p.x - e.deltaX * 0.8),
+                    y: Math.round(p.y - e.deltaY * 0.8),
                   }));
                 }
               }}
             >
-              
-              {/* Floating Tool Icons on left side of character (Pan, Pen, Zoom+, Zoom-, Smile, Pose) */}
-              <div className="absolute left-6 top-1/2 -translate-y-1/2 flex flex-col space-y-2 z-20">
+              {/* Floating Hand / Pan Tool Toggle Button */}
+              <div className="absolute top-4 left-4 z-20 flex flex-col space-y-2">
                 <button
                   title={
                     panToolActive
-                      ? 'Pan Tool Active: Click & drag to move character anywhere (Click to exit)'
+                      ? 'Pan Tool Active: Click & drag canvas to move (or hold Spacebar)'
                       : 'Pan Tool: Click & drag to pan character in all directions (or hold Spacebar)'
                   }
                   onClick={() => setPanToolActive(!panToolActive)}
-                  className={`w-9 h-9 flex items-center justify-center rounded-full shadow-md transition-colors cursor-pointer ${
+                  className={`w-9 h-9 flex items-center justify-center rounded-full shadow-md transition-all cursor-pointer ${
                     panToolActive || spacebarDown
-                      ? 'bg-blue-600 text-white ring-2 ring-blue-400'
+                      ? 'bg-blue-600 text-white ring-2 ring-blue-400 ring-offset-2 scale-105'
                       : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
                   }`}
                 >
                   <Hand className="w-4 h-4" />
                 </button>
-                <button
-                  title="Toggle Skeleton Rig Mode"
-                  onClick={() => setSkeletonMode(!skeletonMode)}
-                  className={`w-9 h-9 flex items-center justify-center rounded-full shadow-md transition-colors cursor-pointer ${
-                    skeletonMode ? 'bg-cyan-600 text-white' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
-                  }`}
-                >
-                  <PenTool className="w-4 h-4" />
-                </button>
-                <button
-                  title="Zoom In (+15%)"
-                  onClick={() => setZoomLevel(z => Math.min(3.0, Number((z + 0.15).toFixed(2))))}
-                  className="w-9 h-9 flex items-center justify-center bg-white text-slate-700 rounded-full shadow-md hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
-                >
-                  <ZoomIn className="w-4 h-4" />
-                </button>
-                <button
-                  title="Zoom Out (-15%)"
-                  onClick={() => setZoomLevel(z => Math.max(0.4, Number((z - 0.15).toFixed(2))))}
-                  className="w-9 h-9 flex items-center justify-center bg-white text-slate-700 rounded-full shadow-md hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
-                >
-                  <ZoomOut className="w-4 h-4" />
-                </button>
-                <button
-                  title="Change Expression"
-                  onClick={() => {
-                    const exps = ['idle', 'smile', 'talkA', 'angry'];
-                    const nextExp = exps[(exps.indexOf(charData.appearance.mouthType) + 1) % exps.length];
-                    setCharData(p => ({
-                      ...p,
-                      appearance: { ...p.appearance, mouthType: nextExp },
-                    }));
-                  }}
-                  className="w-9 h-9 flex items-center justify-center bg-white text-slate-700 rounded-full shadow-md hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
-                >
-                  <Smile className="w-4 h-4" />
-                </button>
-                <button
-                  title="Cycle Pose"
-                  onClick={() => setPreviewAnimIndex((previewAnimIndex + 1) % ANIMATION_PRESETS.length)}
-                  className="w-9 h-9 flex items-center justify-center bg-white text-slate-700 rounded-full shadow-md hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
-                >
-                  <User className="w-4 h-4" />
-                </button>
               </div>
 
               {/* Floating Top-Right Zoom & Pan HUD */}
-              <div className="absolute top-4 right-4 z-20 flex items-center space-x-2 bg-white/95 backdrop-blur-xs px-3 py-1.5 rounded-lg border border-slate-200 shadow-xs text-xs text-slate-700">
-                <span className="font-semibold text-slate-500">Zoom:</span>
-                <span className="font-mono font-bold text-blue-600 w-12 text-center">
-                  {Math.round(zoomLevel * 100)}%
-                </span>
+              <div className="absolute top-4 right-4 z-20 flex items-center space-x-1.5 bg-white/95 backdrop-blur-xs px-2.5 py-1.5 rounded-xl border border-slate-200 shadow-md text-xs text-slate-700">
+                <span className="font-semibold text-slate-400 text-[11px]">Zoom:</span>
                 <button
-                  onClick={() => setZoomLevel(z => Math.max(0.4, Number((z - 0.15).toFixed(2))))}
+                  onClick={() => setZoomLevel(z => Math.max(0.25, Number((z - 0.15).toFixed(2))))}
                   title="Zoom Out"
                   className="w-6 h-6 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded text-slate-700 font-bold transition-colors cursor-pointer"
                 >
                   −
                 </button>
+                <span className="font-mono font-bold text-blue-600 w-12 text-center text-xs">
+                  {Math.round(zoomLevel * 100)}%
+                </span>
                 <button
-                  onClick={() => setZoomLevel(z => Math.min(3.0, Number((z + 0.15).toFixed(2))))}
+                  onClick={() => setZoomLevel(z => Math.min(3.5, Number((z + 0.15).toFixed(2))))}
                   title="Zoom In"
                   className="w-6 h-6 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded text-slate-700 font-bold transition-colors cursor-pointer"
                 >
@@ -1341,128 +1606,101 @@ export const CharacterStudioModal: React.FC<CharacterStudioModalProps> = ({
                   onJointDrag={handleJointDrag}
                   selectedJointId={selectedJoint}
                   onSelectJoint={setSelectedJoint}
-                  width="100%"
-                  height="100%"
+                  className="w-full h-full drop-shadow-xl"
                 />
               </div>
 
-              {/* Bottom Left Notification / Info with Pan & Spacebar guide */}
-              <div className="absolute bottom-4 left-6 flex items-center space-x-2 text-xs text-slate-600 bg-white/95 px-3 py-1.5 rounded-lg border border-slate-200 shadow-xs z-20">
+              {/* Bottom Canvas Mode Hint */}
+              <div className="absolute bottom-3 left-4 z-20 flex items-center space-x-2 text-[11px] text-slate-500 bg-white/90 backdrop-blur-xs px-2.5 py-1 rounded-full border border-slate-200 shadow-2xs">
                 <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
                 <span>
                   {panToolActive || spacebarDown
-                    ? 'Pan Mode Active: Click & drag to pan canvas in any direction'
-                    : 'Tip: Hold Spacebar or click Hand icon to pan. Drag cyan joints to pose.'}
+                    ? 'Pan Mode Active: Click & drag anywhere to move canvas'
+                    : isSkeletonLocked
+                    ? '🔒 Skeleton Locked: Pose is protected from dragging'
+                    : 'Tip: Hold Spacebar to Pan. Drag cyan joints to pose character.'}
                 </span>
               </div>
             </div>
-          </div>
 
-          {/* RIGHT COLUMN: ANIMATION PREVIEW CARD */}
-          <div className="w-80 bg-white border-l border-slate-200 flex flex-col p-4 justify-between">
-            
-            {/* Top Box: Live Animation Preview Box */}
-            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col shadow-xs">
-              <div className="px-4 py-2.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between text-xs font-semibold">
-                <span className="text-slate-800 font-bold">Animation Preview</span>
-                <span className="text-slate-400">−</span>
-              </div>
-
-              {/* Character Animated Motion Box */}
-              <div className="h-64 flex items-center justify-center p-3 relative overflow-hidden bg-gradient-to-b from-slate-100/50 to-white">
-                <div className="w-44 h-56">
-                  <CartoonCharacter
-                    model={charData}
-                    animation={currentAnim.id}
-                    skeletonMode={false}
-                    flipped={isFlipped}
-                    isLipSyncing={currentAnim.id === 'talk' || isTalkingTest}
-                    width="100%"
-                    height="100%"
-                  />
-                </div>
-              </div>
-
-              {/* Animation Selector Carousel (< Idle >) */}
-              <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-t border-slate-100">
-                <button
-                  onClick={() =>
-                    setPreviewAnimIndex(
-                      (previewAnimIndex - 1 + ANIMATION_PRESETS.length) % ANIMATION_PRESETS.length
-                    )
-                  }
-                  className="p-1 hover:bg-slate-200/70 text-slate-500 hover:text-slate-800 rounded cursor-pointer transition-colors"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-
-                <div className="flex items-center space-x-1.5 text-xs font-semibold text-slate-800">
-                  <span>{currentAnim.icon}</span>
-                  <span>{currentAnim.label}</span>
+            {/* BOTTOM CONTROLS & CLOUD SAVE PANEL */}
+            <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 bg-white shadow-xs">
+              
+              {/* Left: Animation Preview & Toggles */}
+              <div className="flex items-center space-x-3">
+                <div className="flex items-center space-x-2 text-xs">
+                  <span className="text-slate-800 font-bold">Animation:</span>
+                  <button
+                    onClick={() => setPreviewAnimIndex((previewAnimIndex + 1) % ANIMATION_PRESETS.length)}
+                    className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 shadow-2xs font-semibold cursor-pointer"
+                  >
+                    <span>{currentAnim.icon}</span>
+                    <span>{currentAnim.label}</span>
+                  </button>
                 </div>
 
-                <button
-                  onClick={() => setPreviewAnimIndex((previewAnimIndex + 1) % ANIMATION_PRESETS.length)}
-                  className="p-1 hover:bg-slate-200/70 text-slate-500 hover:text-slate-800 rounded cursor-pointer transition-colors"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Bottom Controls: Skeleton Mode Toggle, Flip Toggle, Save Character Button */}
-            <div className="space-y-3 pt-4 border-t border-slate-100">
-              {/* Skeleton Mode Toggle */}
-              <div className="flex items-center justify-between px-3 py-2 bg-slate-50 rounded-lg border border-slate-200 shadow-xs">
-                <div className="flex items-center space-x-2 text-xs font-semibold text-slate-700">
-                  <span className="text-cyan-600">🦴</span>
-                  <span>Skeleton Mode</span>
-                </div>
                 <button
                   onClick={() => setSkeletonMode(!skeletonMode)}
-                  className={`w-10 h-5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${
-                    skeletonMode ? 'bg-cyan-600 justify-end' : 'bg-slate-300 justify-start'
+                  className={`flex items-center space-x-1 px-2.5 py-1 rounded-lg border text-xs font-semibold cursor-pointer shadow-2xs ${
+                    skeletonMode ? 'bg-cyan-50 border-cyan-300 text-cyan-800' : 'bg-white border-slate-200 text-slate-600'
                   }`}
                 >
-                  <div className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                  <span>🦴 Skeleton</span>
                 </button>
-              </div>
 
-              {/* Flip Toggle */}
-              <div className="flex items-center justify-between px-3 py-2 bg-slate-50 rounded-lg border border-slate-200 shadow-xs">
-                <div className="flex items-center space-x-2 text-xs font-semibold text-slate-700">
-                  <span className="text-blue-600">⇄</span>
-                  <span>Flip</span>
-                </div>
                 <button
                   onClick={() => setIsFlipped(!isFlipped)}
-                  className={`w-10 h-5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${
-                    isFlipped ? 'bg-blue-600 justify-end' : 'bg-slate-300 justify-start'
+                  className={`flex items-center space-x-1 px-2.5 py-1 rounded-lg border text-xs font-semibold cursor-pointer shadow-2xs ${
+                    isFlipped ? 'bg-blue-50 border-blue-300 text-blue-800' : 'bg-white border-slate-200 text-slate-600'
                   }`}
                 >
-                  <div className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                  <span>⇄ Flip</span>
                 </button>
               </div>
 
-              {/* Character Name Input */}
-              <div>
-                <label className="text-[11px] font-semibold text-slate-500 block mb-1">Character Name</label>
-                <input
-                  type="text"
-                  value={charData.name}
-                  onChange={e => setCharData({ ...charData, name: e.target.value })}
-                  className="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg text-slate-800 shadow-xs focus:outline-none focus:border-blue-500"
-                />
+              {/* Right: Character Name Input & Dual Firebase Cloud Save Actions */}
+              <div className="flex items-center space-x-3">
+                <div className="flex items-center space-x-1.5">
+                  <span className="text-xs font-bold text-slate-500">Name:</span>
+                  <input
+                    type="text"
+                    value={charData.name}
+                    onChange={e => setCharData({ ...charData, name: e.target.value })}
+                    className="w-44 px-2.5 py-1 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800 shadow-2xs focus:outline-none focus:border-blue-500 font-semibold"
+                  />
+                </div>
+
+                {/* 1. Update Current Character */}
+                <button
+                  disabled={isSavingToCloud}
+                  onClick={() => handleSaveToCloud(false)}
+                  className="py-1.5 px-3 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800 font-bold text-xs rounded-lg border border-slate-300 shadow-2xs transition-all flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                  title="Update this character in Firebase Cloud and on Stage"
+                >
+                  {isSavingToCloud ? (
+                    <RefreshCw className="w-3.5 h-3.5 text-slate-600 animate-spin" />
+                  ) : (
+                    <Cloud className="w-3.5 h-3.5 text-blue-600" />
+                  )}
+                  <span>Update Original</span>
+                </button>
+
+                {/* 2. Save as New Character */}
+                <button
+                  disabled={isSavingToCloud}
+                  onClick={() => handleSaveToCloud(true)}
+                  className="py-1.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:opacity-95 text-white font-bold text-xs rounded-lg shadow-sm transition-all flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                  title="Save as a new separate character in Firebase Cloud"
+                >
+                  {isSavingToCloud ? (
+                    <RefreshCw className="w-3.5 h-3.5 text-white animate-spin" />
+                  ) : (
+                    <CloudUpload className="w-3.5 h-3.5 text-white" />
+                  )}
+                  <span>Save as New (Cloud)</span>
+                </button>
               </div>
 
-              {/* Save Character Button */}
-              <button
-                onClick={handleSave}
-                className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold text-sm rounded-xl shadow-xs transition-all flex items-center justify-center space-x-2 cursor-pointer"
-              >
-                <Sparkles className="w-4 h-4" />
-                <span>Save Character</span>
-              </button>
             </div>
 
           </div>

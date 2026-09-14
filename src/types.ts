@@ -71,6 +71,21 @@ export interface CharacterAppearance {
   mouthScale?: number; // Custom scale multiplier (e.g. 0.5 to 2.5, default 1.0) - user can resize bigger/smaller
   mouthLocked?: boolean; // When true (default), lip position is strictly locked to face anchor preventing misalignment
   customMouthImages?: Record<string, string>; // Optional custom user-uploaded replacement images per viseme ('X', 'A', 'B', 'C', 'D', 'E', 'F')
+  
+  // Custom uploaded elements (head, eyes, hair, body, hands, feet)
+  customEyesImage?: string; // User-uploaded custom eyes image / SVG
+  customEyesScale?: number; // Custom eyes scale (default 1.0)
+  customHeadImage?: string; // User-uploaded custom head / face image / SVG
+  customHairImage?: string; // User-uploaded custom hair image / SVG
+  customBodyImage?: string; // User-uploaded custom torso / clothing image / SVG
+  customLeftHandImage?: string; // User-uploaded custom left hand image / SVG
+  customRightHandImage?: string; // User-uploaded custom right hand image / SVG
+  customLeftFootImage?: string; // User-uploaded custom left shoe / foot image / SVG
+  customRightFootImage?: string; // User-uploaded custom right shoe / foot image / SVG
+
+  // Element & Rigging Locks
+  lockedParts?: Record<string, boolean>; // e.g. { skeleton: true, head: true, eyes: true, mouth: true, body: true, hands: true, feet: true }
+
   bodyType: string; // 'vest' | 'kurta' | 'saree' | 'tshirt' | 'royal'
   clothingColor: string;
   clothingSecondaryColor: string;

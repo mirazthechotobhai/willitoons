@@ -137,7 +137,8 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
 
   // Handle Joint Dragging for IK
   const handleMouseDown = (jointId: JointId, e: React.MouseEvent | React.TouchEvent) => {
-    if (!interactiveBones) return;
+    // If skeleton is locked or interactiveBones is false, prevent dragging
+    if (!interactiveBones || appearance.lockedParts?.['skeleton']) return;
     e.stopPropagation();
     if ('preventDefault' in e) e.preventDefault();
     setDraggingJoint(jointId);
@@ -262,13 +263,24 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
                 strokeLinecap="round"
               />
               {/* Foot / Sandal */}
-              <ellipse
-                cx={joints.toeL.x}
-                cy={joints.toeL.y}
-                rx="4.5"
-                ry="2.2"
-                fill="#78350f"
-              />
+              {appearance.customLeftFootImage ? (
+                <image
+                  href={appearance.customLeftFootImage}
+                  x={joints.toeL.x - 5}
+                  y={joints.toeL.y - 3}
+                  width="10"
+                  height="6"
+                  preserveAspectRatio="xMidYMid meet"
+                />
+              ) : (
+                <ellipse
+                  cx={joints.toeL.x}
+                  cy={joints.toeL.y}
+                  rx="4.5"
+                  ry="2.2"
+                  fill="#78350f"
+                />
+              )}
             </g>
 
             {/* Right Leg */}
@@ -292,13 +304,24 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
                 strokeLinecap="round"
               />
               {/* Foot / Sandal */}
-              <ellipse
-                cx={joints.toeR.x}
-                cy={joints.toeR.y}
-                rx="4.5"
-                ry="2.2"
-                fill="#78350f"
-              />
+              {appearance.customRightFootImage ? (
+                <image
+                  href={appearance.customRightFootImage}
+                  x={joints.toeR.x - 5}
+                  y={joints.toeR.y - 3}
+                  width="10"
+                  height="6"
+                  preserveAspectRatio="xMidYMid meet"
+                />
+              ) : (
+                <ellipse
+                  cx={joints.toeR.x}
+                  cy={joints.toeR.y}
+                  rx="4.5"
+                  ry="2.2"
+                  fill="#78350f"
+                />
+              )}
             </g>
 
             {/* Lower Garment (Lungi / Dhoti / Pants / Skirt) */}
@@ -340,62 +363,75 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
 
           {/* TORSO / UPPER BODY */}
           <g id="torso-group">
-            {/* Bare / Base Torso */}
-            <path
-              d="M41 28 Q50 27 59 28 L61 54 Q50 56 39 54 Z"
-              fill={`url(#skinGrad-${model.id})`}
-            />
+            {appearance.customBodyImage ? (
+              <image
+                href={appearance.customBodyImage}
+                x="35"
+                y="24"
+                width="30"
+                height="38"
+                preserveAspectRatio="xMidYMid meet"
+              />
+            ) : (
+              <>
+                {/* Bare / Base Torso */}
+                <path
+                  d="M41 28 Q50 27 59 28 L61 54 Q50 56 39 54 Z"
+                  fill={`url(#skinGrad-${model.id})`}
+                />
 
-            {/* Torso Clothing (Vest, Kurta, Saree, T-shirt, Royal) */}
-            {appearance.bodyType === 'vest' && (
-              <path
-                d="M43 28 Q50 33 57 28 L59 53 Q50 55 41 53 Z"
-                fill={appearance.clothingColor}
-                stroke="#d1d5db"
-                strokeWidth="0.8"
-              />
-            )}
-            {appearance.bodyType === 'kurta' && (
-              <path
-                d="M40 27 Q50 29 60 27 L63 58 Q50 60 37 58 Z"
-                fill={appearance.clothingColor}
-                stroke={shadeColor(appearance.clothingColor, -20)}
-                strokeWidth="1"
-              />
-            )}
-            {appearance.bodyType === 'tshirt' && (
-              <path
-                d="M39 27 Q50 30 61 27 L61 53 Q50 55 39 53 Z"
-                fill={appearance.clothingColor}
-              />
-            )}
-            {appearance.bodyType === 'saree' && (
-              <g>
-                <path
-                  d="M42 28 Q50 30 58 28 L60 54 Q50 56 40 54 Z"
-                  fill={appearance.clothingColor}
-                />
-                {/* Saree Pallu crossing diagonal */}
-                <path
-                  d="M41 28 L59 48 L56 55 L38 35 Z"
-                  fill={appearance.clothingSecondaryColor}
-                  stroke="#fbbf24"
-                  strokeWidth="0.8"
-                />
-              </g>
-            )}
-            {appearance.bodyType === 'royal' && (
-              <g>
-                <path
-                  d="M39 26 Q50 28 61 26 L63 60 Q50 62 37 60 Z"
-                  fill={appearance.clothingColor}
-                />
-                {/* Gold Royal Embroidered Border & Sash */}
-                <path d="M48 27 L48 60" stroke="#facc15" strokeWidth="2" />
-                <path d="M42 34 L58 48" stroke="#ca8a04" strokeWidth="2.5" />
-                {/* Royal Belt / Kamarbandh */}
-                <rect x="38" y="50" width="24" height="4" fill="#eab308" rx="1" />
-              </g>
+                {/* Torso Clothing (Vest, Kurta, Saree, T-shirt, Royal) */}
+                {appearance.bodyType === 'vest' && (
+                  <path
+                    d="M43 28 Q50 33 57 28 L59 53 Q50 55 41 53 Z"
+                    fill={appearance.clothingColor}
+                    stroke="#d1d5db"
+                    strokeWidth="0.8"
+                  />
+                )}
+                {appearance.bodyType === 'kurta' && (
+                  <path
+                    d="M40 27 Q50 29 60 27 L63 58 Q50 60 37 58 Z"
+                    fill={appearance.clothingColor}
+                    stroke={shadeColor(appearance.clothingColor, -20)}
+                    strokeWidth="1"
+                  />
+                )}
+                {appearance.bodyType === 'tshirt' && (
+                  <path
+                    d="M39 27 Q50 30 61 27 L61 53 Q50 55 39 53 Z"
+                    fill={appearance.clothingColor}
+                  />
+                )}
+                {appearance.bodyType === 'saree' && (
+                  <g>
+                    <path
+                      d="M42 28 Q50 30 58 28 L60 54 Q50 56 40 54 Z"
+                      fill={appearance.clothingColor}
+                    />
+                    {/* Saree Pallu crossing diagonal */}
+                    <path
+                      d="M41 28 L59 48 L56 55 L38 35 Z"
+                      fill={appearance.clothingSecondaryColor}
+                      stroke="#fbbf24"
+                      strokeWidth="0.8"
+                    />
+                  </g>
+                )}
+                {appearance.bodyType === 'royal' && (
+                  <g>
+                    <path
+                      d="M39 26 Q50 28 61 26 L63 60 Q50 62 37 60 Z"
+                      fill={appearance.clothingColor}
+                    />
+                    {/* Gold Royal Embroidered Border & Sash */}
+                    <path d="M48 27 L48 60" stroke="#facc15" strokeWidth="2" />
+                    <path d="M42 34 L58 48" stroke="#ca8a04" strokeWidth="2.5" />
+                    {/* Royal Belt / Kamarbandh */}
+                    <rect x="38" y="50" width="24" height="4" fill="#eab308" rx="1" />
+                  </g>
+                )}
+              </>
             )}
           </g>
 
@@ -420,7 +456,18 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
               strokeLinecap="round"
             />
             {/* Hand / Palm */}
-            <circle cx={joints.wristL.x} cy={joints.wristL.y} r="2.8" fill={`url(#skinGrad-${model.id})`} />
+            {appearance.customLeftHandImage ? (
+              <image
+                href={appearance.customLeftHandImage}
+                x={joints.wristL.x - 4}
+                y={joints.wristL.y - 4}
+                width="8"
+                height="8"
+                preserveAspectRatio="xMidYMid meet"
+              />
+            ) : (
+              <circle cx={joints.wristL.x} cy={joints.wristL.y} r="2.8" fill={`url(#skinGrad-${model.id})`} />
+            )}
           </g>
 
           {/* RIGHT ARM */}
@@ -444,7 +491,18 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
               strokeLinecap="round"
             />
             {/* Hand / Palm */}
-            <circle cx={joints.wristR.x} cy={joints.wristR.y} r="2.8" fill={`url(#skinGrad-${model.id})`} />
+            {appearance.customRightHandImage ? (
+              <image
+                href={appearance.customRightHandImage}
+                x={joints.wristR.x - 4}
+                y={joints.wristR.y - 4}
+                width="8"
+                height="8"
+                preserveAspectRatio="xMidYMid meet"
+              />
+            ) : (
+              <circle cx={joints.wristR.x} cy={joints.wristR.y} r="2.8" fill={`url(#skinGrad-${model.id})`} />
+            )}
           </g>
 
           {/* HEAD & FACE */}
@@ -456,35 +514,61 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
             <rect x="47" y="24" width="6" height="5" fill={`url(#skinGrad-${model.id})`} rx="2" />
 
             {/* Head Base */}
-            <ellipse
-              cx={isAngle34Front ? 50.5 : 50}
-              cy="18"
-              rx="7.5"
-              ry="8.5"
-              fill={`url(#skinGrad-${model.id})`}
-            />
+            {appearance.customHeadImage ? (
+              <image
+                href={appearance.customHeadImage}
+                x="40"
+                y="8"
+                width="20"
+                height="20"
+                preserveAspectRatio="xMidYMid meet"
+              />
+            ) : (
+              <>
+                <ellipse
+                  cx={isAngle34Front ? 50.5 : 50}
+                  cy="18"
+                  rx="7.5"
+                  ry="8.5"
+                  fill={`url(#skinGrad-${model.id})`}
+                />
 
-            {/* Ears */}
-            <ellipse cx="42.5" cy="18" rx="1.5" ry="2.5" fill={`url(#skinGrad-${model.id})`} />
-            <ellipse cx="57.5" cy="18" rx="1.5" ry="2.5" fill={`url(#skinGrad-${model.id})`} />
+                {/* Ears */}
+                <ellipse cx="42.5" cy="18" rx="1.5" ry="2.5" fill={`url(#skinGrad-${model.id})`} />
+                <ellipse cx="57.5" cy="18" rx="1.5" ry="2.5" fill={`url(#skinGrad-${model.id})`} />
+              </>
+            )}
 
             {/* Hair (Back/Sides) */}
-            {appearance.hairStyle === 'short' && (
-              <path
-                d="M42 16 Q50 9 58 16 Q58 13 50 11 Q42 13 42 16 Z"
-                fill={appearance.hairColor}
+            {appearance.customHairImage ? (
+              <image
+                href={appearance.customHairImage}
+                x="38"
+                y="6"
+                width="24"
+                height="22"
+                preserveAspectRatio="xMidYMid meet"
               />
-            )}
-            {appearance.hairStyle === 'bun' && (
-              <circle cx="50" cy="10" r="4.5" fill={appearance.hairColor} />
-            )}
-            {appearance.hairStyle === 'braids' && (
-              <g>
-                <path d="M43 14 Q50 9 57 14 Z" fill={appearance.hairColor} />
-                {/* Long braid */}
-                <path d="M42 18 Q38 28 40 38" stroke={appearance.hairColor} strokeWidth="3" fill="none" strokeLinecap="round" />
-                <circle cx="40" cy="38" r="2" fill="#ef4444" />
-              </g>
+            ) : (
+              <>
+                {appearance.hairStyle === 'short' && (
+                  <path
+                    d="M42 16 Q50 9 58 16 Q58 13 50 11 Q42 13 42 16 Z"
+                    fill={appearance.hairColor}
+                  />
+                )}
+                {appearance.hairStyle === 'bun' && (
+                  <circle cx="50" cy="10" r="4.5" fill={appearance.hairColor} />
+                )}
+                {appearance.hairStyle === 'braids' && (
+                  <g>
+                    <path d="M43 14 Q50 9 57 14 Z" fill={appearance.hairColor} />
+                    {/* Long braid */}
+                    <path d="M42 18 Q38 28 40 38" stroke={appearance.hairColor} strokeWidth="3" fill="none" strokeLinecap="round" />
+                    <circle cx="40" cy="38" r="2" fill="#ef4444" />
+                  </g>
+                )}
+              </>
             )}
 
             {/* Headwear: Traditional Turban / Pagri */}
@@ -504,7 +588,23 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
             {/* EYES */}
             {!isAngle34Back && (
               <g id="eyes">
-                {isBlinking ? (
+                {appearance.customEyesImage ? (
+                  <g
+                    transform={appearance.customEyesScale && appearance.customEyesScale !== 1
+                      ? `translate(50, 17) scale(${appearance.customEyesScale}) translate(-50, -17)`
+                      : undefined
+                    }
+                  >
+                    <image
+                      href={appearance.customEyesImage}
+                      x="42"
+                      y="13.5"
+                      width="16"
+                      height="8"
+                      preserveAspectRatio="xMidYMid meet"
+                    />
+                  </g>
+                ) : isBlinking ? (
                   /* Blinking lines */
                   <g stroke="#374151" strokeWidth="1.2" strokeLinecap="round">
                     <line x1="46" y1="17.5" x2="48.5" y2="17.5" />

@@ -46,6 +46,50 @@ import {
 import { STOCK_BACKGROUNDS, STOCK_AUDIO } from '../utils/mediaStock';
 import { DEFAULT_CHARACTERS } from '../utils/characterPresets';
 
+// Distinct color theme per scene to visually distinguish them without needing text/numbers
+const SCENE_PALETTE = [
+  {
+    active: 'bg-amber-500/25 border-amber-400 text-amber-300 ring-1 ring-amber-400/50 shadow-sm',
+    inactive: 'bg-amber-950/40 border-amber-700/60 text-amber-400 hover:border-amber-500 hover:bg-amber-900/50',
+    dot: 'bg-amber-400',
+  },
+  {
+    active: 'bg-cyan-500/25 border-cyan-400 text-cyan-300 ring-1 ring-cyan-400/50 shadow-sm',
+    inactive: 'bg-cyan-950/40 border-cyan-700/60 text-cyan-400 hover:border-cyan-500 hover:bg-cyan-900/50',
+    dot: 'bg-cyan-400',
+  },
+  {
+    active: 'bg-emerald-500/25 border-emerald-400 text-emerald-300 ring-1 ring-emerald-400/50 shadow-sm',
+    inactive: 'bg-emerald-950/40 border-emerald-700/60 text-emerald-400 hover:border-emerald-500 hover:bg-emerald-900/50',
+    dot: 'bg-emerald-400',
+  },
+  {
+    active: 'bg-purple-500/25 border-purple-400 text-purple-300 ring-1 ring-purple-400/50 shadow-sm',
+    inactive: 'bg-purple-950/40 border-purple-700/60 text-purple-400 hover:border-purple-500 hover:bg-purple-900/50',
+    dot: 'bg-purple-400',
+  },
+  {
+    active: 'bg-rose-500/25 border-rose-400 text-rose-300 ring-1 ring-rose-400/50 shadow-sm',
+    inactive: 'bg-rose-950/40 border-rose-700/60 text-rose-400 hover:border-rose-500 hover:bg-rose-900/50',
+    dot: 'bg-rose-400',
+  },
+  {
+    active: 'bg-blue-500/25 border-blue-400 text-blue-300 ring-1 ring-blue-400/50 shadow-sm',
+    inactive: 'bg-blue-950/40 border-blue-700/60 text-blue-400 hover:border-blue-500 hover:bg-blue-900/50',
+    dot: 'bg-blue-400',
+  },
+  {
+    active: 'bg-orange-500/25 border-orange-400 text-orange-300 ring-1 ring-orange-400/50 shadow-sm',
+    inactive: 'bg-orange-950/40 border-orange-700/60 text-orange-400 hover:border-orange-500 hover:bg-orange-900/50',
+    dot: 'bg-orange-400',
+  },
+  {
+    active: 'bg-fuchsia-500/25 border-fuchsia-400 text-fuchsia-300 ring-1 ring-fuchsia-400/50 shadow-sm',
+    inactive: 'bg-fuchsia-950/40 border-fuchsia-700/60 text-fuchsia-400 hover:border-fuchsia-500 hover:bg-fuchsia-900/50',
+    dot: 'bg-fuchsia-400',
+  },
+];
+
 interface TimelineProps {
   scenes: Scene[];
   activeSceneIndex: number;
@@ -71,6 +115,10 @@ interface TimelineProps {
   onChangeZoomScale?: (zoom: number) => void;
   timelineZoom?: number;
   onChangeTimelineZoom?: (zoom: number) => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
 }
 
 export const Timeline: React.FC<TimelineProps> = ({
@@ -98,9 +146,23 @@ export const Timeline: React.FC<TimelineProps> = ({
   onChangeZoomScale,
   timelineZoom: externalTimelineZoom,
   onChangeTimelineZoom,
+  onUndo,
+  onRedo,
+  canUndo = true,
+  canRedo = true,
 }) => {
   const currentScene = scenes[activeSceneIndex] || scenes[0];
-  const duration = currentScene?.duration || 12;
+  const sceneDuration = currentScene?.duration || 12;
+
+  // Calculate maximum end time across all visual elements and audio tracks
+  const maxLayerEndTime = Math.max(
+    sceneDuration,
+    ...(currentScene?.elements || []).map(el => (el.startTime || 0) + (el.duration || 0)),
+    ...(currentScene?.audioTracks || []).map(at => (at.startTime || 0) + (at.duration || 0))
+  );
+
+  // Effective duration expands so user can pan all the way to the end of the longest layer
+  const duration = Math.max(sceneDuration, Math.ceil(maxLayerEndTime));
 
   const [internalTimelineZoom, setInternalTimelineZoom] = useState<number>(1);
   const timelineZoom = externalTimelineZoom ?? internalTimelineZoom;
@@ -112,6 +174,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   const [isTimelinePanning, setIsTimelinePanning] = useState(false);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isLayerHeadersVisible, setIsLayerHeadersVisible] = useState(true);
   const [isTimelineLocked, setIsTimelineLocked] = useState(false);
   const [isMultiSelect, setIsMultiSelect] = useState(false);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
@@ -119,7 +182,6 @@ export const Timeline: React.FC<TimelineProps> = ({
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [editingNameValue, setEditingNameValue] = useState('');
   const [isAddLayerOpen, setIsAddLayerOpen] = useState(false);
-  const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
 
   // Format timecode (e.g. 00:00)
   const formatTimecode = (seconds: number) => {
@@ -165,6 +227,15 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   const timelineTicks = getTimelineTicks();
 
+  // Dynamic pixel width calculation for timeline content:
+  // Base 75px per second gives comfortable visual spacing for each second marker and clip handles.
+  // Scales with timelineZoom (from 0.5x to 5x).
+  // Includes layer headers width and 240px extra right-side buffer to comfortably navigate past the very end of the longest layer.
+  const basePixelsPerSec = 75;
+  const headerOffsetPx = isLayerHeadersVisible ? 176 : 0;
+  const minTrackWidthPx = Math.round(duration * basePixelsPerSec * timelineZoom);
+  const totalTimelineWidthPx = minTrackWidthPx + headerOffsetPx + 240;
+
   // Close menus on click outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -188,18 +259,19 @@ export const Timeline: React.FC<TimelineProps> = ({
     const clientWidth = scrollContainer.clientWidth;
     if (scrollWidth <= clientWidth) return;
 
-    const playheadX = (currentTime / duration) * (scrollWidth - 176) + 176;
+    const headerOffset = isLayerHeadersVisible ? 176 : 0;
+    const playheadX = (currentTime / duration) * (scrollWidth - headerOffset) + headerOffset;
     const viewLeft = scrollContainer.scrollLeft;
     const viewRight = viewLeft + clientWidth;
 
     if (playheadX > viewRight - 60) {
       scrollContainer.scrollLeft = playheadX - 140;
-    } else if (playheadX < viewLeft + 176) {
-      scrollContainer.scrollLeft = Math.max(0, playheadX - 176);
+    } else if (playheadX < viewLeft + headerOffset) {
+      scrollContainer.scrollLeft = Math.max(0, playheadX - headerOffset);
     }
-  }, [currentTime, isPlaying, duration]);
+  }, [currentTime, isPlaying, duration, isLayerHeadersVisible]);
 
-  // Handle Timeline Hand Tool Panning
+  // Handle Timeline Hand Tool Panning (Mouse Drag)
   const handleTimelineMouseDown = (e: React.MouseEvent) => {
     if (!isTimelinePanMode || !timelineScrollRef.current) return;
     setIsTimelinePanning(true);
@@ -219,6 +291,31 @@ export const Timeline: React.FC<TimelineProps> = ({
 
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
+  };
+
+  // Handle Timeline Hand Tool Panning (Touch Drag for Mobile / Tablets)
+  const handleTimelineTouchStart = (e: React.TouchEvent) => {
+    if (!isTimelinePanMode || !timelineScrollRef.current) return;
+    if (e.touches.length !== 1) return;
+    setIsTimelinePanning(true);
+    const startX = e.touches[0].clientX;
+    const startScrollLeft = timelineScrollRef.current.scrollLeft;
+
+    const onTouchMove = (moveEvent: TouchEvent) => {
+      if (!timelineScrollRef.current || moveEvent.touches.length !== 1) return;
+      moveEvent.preventDefault();
+      const deltaX = moveEvent.touches[0].clientX - startX;
+      timelineScrollRef.current.scrollLeft = startScrollLeft - deltaX;
+    };
+
+    const onTouchEnd = () => {
+      setIsTimelinePanning(false);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
+    };
+
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onTouchEnd);
   };
 
   // Handle Scrubbing on Ruler
@@ -565,34 +662,58 @@ export const Timeline: React.FC<TimelineProps> = ({
   return (
     <div
       className={`bg-[#12161f] border-t border-[#222834] flex flex-col select-none transition-all duration-200 z-20 shrink-0 shadow-lg text-slate-200 ${
-        isCollapsed ? 'h-10' : 'h-64 sm:h-72'
+        isCollapsed ? 'h-8' : 'h-64 sm:h-72'
       }`}
     >
       {/* 1. SCENE TABS BAR (Screenshot 5: Scene1 [ ⋮ ] + New Scene) */}
-      <div className="h-8 bg-[#181d28] border-b border-[#242b3a] px-3 flex items-center justify-between text-xs">
+      <div className={`h-8 bg-[#181d28] px-3 flex items-center justify-between text-xs shrink-0 ${!isCollapsed ? 'border-b border-[#242b3a]' : ''}`}>
         <div className="flex items-center space-x-1.5 overflow-x-auto no-scrollbar">
           <button
             onClick={() => onSelectScene(Math.max(0, activeSceneIndex - 1))}
             disabled={activeSceneIndex === 0}
-            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer transition-colors"
+            className="hidden sm:inline-flex p-1 text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer transition-colors"
           >
             <ChevronLeft className="w-3.5 h-3.5" />
           </button>
 
+          {/* LAYER HEADERS TOGGLE (Stacked Layers icon from user - Click to hide/show the left layer-headers panel) */}
+          <button
+            onClick={() => setIsLayerHeadersVisible(!isLayerHeadersVisible)}
+            title={isLayerHeadersVisible ? 'Hide Layer Controls & Names (Maximize Track Space)' : 'Show Layer Controls & Names'}
+            className={`flex items-center justify-center p-1.5 rounded transition-all cursor-pointer border active:scale-95 shrink-0 ${
+              isLayerHeadersVisible
+                ? 'bg-blue-600/30 text-blue-400 border-blue-500/50 shadow-xs'
+                : 'bg-[#151922] text-slate-400 hover:text-slate-200 border-[#2e3748] hover:bg-[#1c222e]'
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5" />
+          </button>
+
           {scenes.map((sc, idx) => {
             const isActive = idx === activeSceneIndex;
+            const colorTheme = SCENE_PALETTE[idx % SCENE_PALETTE.length];
             return (
               <div
                 key={sc.id}
                 onClick={() => onSelectScene(idx)}
-                className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs font-semibold transition-colors cursor-pointer ${
+                title={`${sc.name || `Scene ${idx + 1}`} (${sc.duration}s)`}
+                className={`flex items-center justify-center space-x-1 px-2 py-1 sm:px-3 rounded text-xs font-semibold transition-all cursor-pointer border ${
                   isActive
-                    ? 'bg-[#222834] text-blue-400 border border-blue-500/40 shadow-xs'
-                    : 'bg-[#151922] text-slate-400 hover:text-slate-200 hover:bg-[#1c222e]'
+                    ? `${colorTheme.active} scale-105 shadow-sm`
+                    : `${colorTheme.inactive}`
                 }`}
               >
-                <span>{sc.name || `Scene ${idx + 1}`}</span>
-                <span className="text-[10px] font-mono text-slate-500">({sc.duration}s)</span>
+                {/* On mobile: ONLY 🖼️ icon, no text or numbers (1, 2) */}
+                <span className="sm:hidden text-sm leading-none select-none">
+                  🖼️
+                </span>
+
+                {/* On desktop: 🖼️ icon + Scene Name + Duration */}
+                <div className="hidden sm:flex items-center space-x-1.5">
+                  <span className="text-xs leading-none">🖼️</span>
+                  <span>{sc.name || `Scene ${idx + 1}`}</span>
+                  <span className="text-[10px] font-mono opacity-75">({sc.duration}s)</span>
+                </div>
 
                 {scenes.length > 1 && (
                   <button
@@ -600,7 +721,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                       e.stopPropagation();
                       onDeleteScene(idx);
                     }}
-                    className="p-0.5 text-slate-400 hover:text-red-400 rounded cursor-pointer ml-1"
+                    className="hidden sm:inline-flex p-0.5 text-slate-400 hover:text-red-400 rounded cursor-pointer ml-1"
                     title="Delete Scene"
                   >
                     <Trash2 className="w-2.5 h-2.5" />
@@ -613,10 +734,10 @@ export const Timeline: React.FC<TimelineProps> = ({
           {/* + New Scene Button */}
           <button
             onClick={onAddScene}
-            className="flex items-center space-x-1 px-2.5 py-1 bg-[#1c222e] hover:bg-[#252c3b] text-slate-300 rounded border border-[#2e3748] text-xs font-semibold transition-colors cursor-pointer"
+            title="Add New Scene"
+            className="flex items-center justify-center p-1.5 bg-[#1c222e] hover:bg-[#252c3b] text-slate-300 rounded border border-[#2e3748] transition-colors cursor-pointer active:scale-95"
           >
-            <Plus className="w-3 h-3 text-blue-400" />
-            <span>New Scene</span>
+            <Plus className="w-3.5 h-3.5 text-blue-400" />
           </button>
 
           <button
@@ -650,58 +771,30 @@ export const Timeline: React.FC<TimelineProps> = ({
 
       {/* 2. TIMELINE TOP CONTROL BAR (Screenshot 5: Multi Select, Layer Duplicate, Split, Camera, Transport, Zoom) */}
       {!isCollapsed && (
-        <div className="h-9 bg-[#161a24] border-b border-[#232938] px-3 flex items-center justify-between text-xs text-slate-300 shrink-0">
+        <div className="h-9 bg-[#161a24] border-b border-[#232938] px-1.5 sm:px-2 md:px-3 flex items-center justify-between text-xs text-slate-300 shrink-0 w-full min-w-0 flex-nowrap overflow-x-auto no-scrollbar">
           
-          {/* Left Buttons: Multi Select, Layer Duplicate, Duplicate, Split, Camera, + Layer */}
-          <div className="flex items-center space-x-1">
+          {/* Main Controls: Multi Select, + Layer, Hand Tool, Jump Start/End, Zoom (- + 100%), Fit */}
+          <div className="flex items-center space-x-0.5 sm:space-x-1 shrink-0">
             <button
               onClick={() => setIsMultiSelect(!isMultiSelect)}
-              className={`flex items-center space-x-1 px-2 py-1 rounded transition-colors cursor-pointer text-[11px] ${
+              title="Multi Select"
+              className={`p-1 sm:p-1.5 rounded transition-colors cursor-pointer ${
                 isMultiSelect
                   ? 'bg-blue-600/30 text-blue-400 font-semibold border border-blue-500/50'
                   : 'hover:bg-[#202634] text-slate-400 hover:text-white'
               }`}
             >
-              <CheckSquare className="w-3 h-3" />
-              <span>Multi Select</span>
-            </button>
-
-            <button
-              onClick={() => selectedElementId && onDuplicateElement && onDuplicateElement(selectedElementId)}
-              disabled={!selectedElementId}
-              className="flex items-center space-x-1 px-2 py-1 rounded hover:bg-[#202634] text-slate-400 hover:text-white disabled:opacity-30 transition-colors cursor-pointer text-[11px]"
-              title="Duplicate Layer"
-            >
-              <Copy className="w-3 h-3" />
-              <span>Layer Duplicate</span>
-            </button>
-
-            <button
-              onClick={handleSplitSelected}
-              disabled={!selectedElementId}
-              className="flex items-center space-x-1 px-2 py-1 rounded hover:bg-[#202634] text-slate-400 hover:text-white disabled:opacity-30 transition-colors cursor-pointer text-[11px]"
-              title="Split at Playhead"
-            >
-              <Scissors className="w-3 h-3" />
-              <span>Split</span>
-            </button>
-
-            <button
-              className="flex items-center space-x-1 px-2 py-1 rounded hover:bg-[#202634] text-slate-400 hover:text-white transition-colors cursor-pointer text-[11px]"
-              title="Camera Keyframes"
-            >
-              <Camera className="w-3 h-3" />
-              <span>Camera</span>
+              <CheckSquare className="w-3.5 h-3.5" />
             </button>
 
             {/* Quick + Add Layer Dropdown */}
             <div className="relative add-layer-container">
               <button
                 onClick={() => setIsAddLayerOpen(!isAddLayerOpen)}
-                className="flex items-center space-x-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-[11px] font-semibold transition-colors cursor-pointer shadow-xs ml-1"
+                className="p-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors cursor-pointer shadow-xs active:scale-95"
+                title="Add Layer to Timeline"
               >
-                <Plus className="w-3 h-3" />
-                <span>Add Layer</span>
+                <Plus className="w-3.5 h-3.5" />
               </button>
 
               {isAddLayerOpen && (
@@ -754,86 +847,65 @@ export const Timeline: React.FC<TimelineProps> = ({
                 </div>
               )}
             </div>
-          </div>
 
-          {/* Center: Transport Controls (|<, (5), Play, Clapperboard, (5), 00:00 1x >>) */}
-          <div className="flex items-center space-x-1.5 sm:space-x-2">
-            <button
-              onClick={() => onSeek(0)}
-              className="p-1 text-slate-400 hover:text-white transition-colors cursor-pointer"
-              title="Jump to Start"
-            >
-              <SkipBack className="w-3.5 h-3.5" />
-            </button>
+            <div className="w-px h-4 bg-slate-700/80 mx-0.5 sm:mx-1" />
 
-            <button
-              onClick={() => onSeek(Math.max(0, currentTime - 5))}
-              className="flex items-center justify-center w-6 h-6 rounded hover:bg-[#202634] text-slate-400 hover:text-white text-[10px] font-bold cursor-pointer"
-              title="Rewind 5s"
-            >
-              5
-            </button>
-
-            <button
-              onClick={onTogglePlay}
-              className="p-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-full transition-transform active:scale-95 cursor-pointer shadow-md"
-              title={isPlaying ? 'Pause' : 'Play'}
-            >
-              {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-            </button>
-
-            <button
-              className="p-1 text-slate-400 hover:text-white transition-colors cursor-pointer"
-              title="Preview Scene"
-            >
-              <Film className="w-3.5 h-3.5" />
-            </button>
-
-            <button
-              onClick={() => onSeek(Math.min(duration, currentTime + 5))}
-              className="flex items-center justify-center w-6 h-6 rounded hover:bg-[#202634] text-slate-400 hover:text-white text-[10px] font-bold cursor-pointer"
-              title="Forward 5s"
-            >
-              5
-            </button>
-
-            <div className="flex items-center space-x-1 pl-1 font-mono text-[11px] text-slate-300">
-              <span>{formatTimecode(currentTime)}</span>
-              <button
-                onClick={() => {
-                  const speeds = [0.5, 1, 1.5, 2];
-                  const next = speeds[(speeds.indexOf(playbackSpeed) + 1) % speeds.length];
-                  setPlaybackSpeed(next);
-                }}
-                className="px-1 py-0.5 bg-[#202634] rounded text-[10px] text-slate-400 hover:text-white cursor-pointer"
-              >
-                {playbackSpeed}x &gt;&gt;
-              </button>
-            </div>
-          </div>
-
-          {/* Right Tools: Hand (Pan Timeline), Zoom Out, Slider, Zoom In, %, Fit to Timeline, Undo/Redo */}
-          <div className="flex items-center space-x-1 sm:space-x-1.5 text-slate-400">
+            {/* Hand Tool (Moved to left side for extra right-side room) */}
             <button
               onClick={() => setIsTimelinePanMode(!isTimelinePanMode)}
-              className={`p-1 rounded cursor-pointer transition-colors ${
-                isTimelinePanMode ? 'bg-blue-600 text-white shadow-xs' : 'hover:text-white hover:bg-[#202634]'
+              className={`p-1.5 rounded cursor-pointer transition-all flex items-center space-x-1.5 ${
+                isTimelinePanMode
+                  ? 'bg-blue-600 text-white shadow-xs ring-1 ring-blue-400 font-medium'
+                  : 'hover:text-white hover:bg-[#202634] text-slate-400'
               }`}
-              title="Hand Tool (Pan Timeline Horizontally)"
+              title="Hand Tool (Pan Timeline) - Click & drag to pan left/right"
             >
               <Hand className="w-3.5 h-3.5" />
+              {isTimelinePanMode && (
+                <span className="text-[10px] font-semibold text-blue-100 hidden sm:inline">Hand</span>
+              )}
             </button>
 
-            {/* Timeline Zoom Slider and Buttons (50% to 500% zoom) */}
-            <div className="flex items-center space-x-1 px-1.5 py-0.5 bg-[#10141c] rounded border border-[#242b3a]">
+            {/* Quick Scroll to Timeline Start (00:00) */}
+            <button
+              onClick={() => {
+                if (timelineScrollRef.current) {
+                  timelineScrollRef.current.scrollTo({ left: 0, behavior: 'smooth' });
+                }
+              }}
+              className="p-1.5 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
+              title="Jump to Start (00:00)"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Quick Scroll to Timeline End (Last Layer) */}
+            <button
+              onClick={() => {
+                if (timelineScrollRef.current) {
+                  timelineScrollRef.current.scrollTo({ left: timelineScrollRef.current.scrollWidth, behavior: 'smooth' });
+                }
+              }}
+              className="p-1 sm:p-1.5 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
+              title="Jump to End (Last Layer)"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Divider after Jump to End - closes the large gap */}
+            <div className="w-px h-3.5 sm:h-4 bg-slate-700/80 mx-0.5" />
+
+            {/* Timeline Zoom: - and + with 100% display right next to Jump to End */}
+            <div className="flex items-center space-x-0.5 sm:space-x-1 px-1 sm:px-1.5 py-0.5 bg-[#10141c] rounded border border-[#242b3a]">
               <button
                 onClick={() => setTimelineZoom(Math.max(0.5, Math.round((timelineZoom - 0.25) * 100) / 100))}
-                className="p-0.5 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
-                title="Zoom Out Timeline (Wider overview)"
+                className="p-0.5 sm:p-1 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
+                title="Zoom Out (-)"
               >
-                <ZoomOut className="w-3 h-3" />
+                <ZoomOut className="w-3.5 h-3.5" />
               </button>
 
+              {/* Slider (Visible on md desktop screens) */}
               <input
                 type="range"
                 min="0.5"
@@ -841,42 +913,51 @@ export const Timeline: React.FC<TimelineProps> = ({
                 step="0.25"
                 value={timelineZoom}
                 onChange={e => setTimelineZoom(parseFloat(e.target.value))}
-                className="w-16 sm:w-20 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                className="hidden md:inline-block w-12 lg:w-16 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
                 title={`Timeline Zoom: ${Math.round(timelineZoom * 100)}%`}
               />
 
               <button
                 onClick={() => setTimelineZoom(Math.min(5, Math.round((timelineZoom + 0.25) * 100) / 100))}
-                className="p-0.5 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
-                title="Zoom In Timeline (Precise sub-second audio editing)"
+                className="p-0.5 sm:p-1 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
+                title="Zoom In (+)"
               >
-                <ZoomIn className="w-3 h-3" />
+                <ZoomIn className="w-3.5 h-3.5" />
               </button>
 
-              <span className="text-[10px] font-mono text-blue-400 min-w-[32px] text-right font-semibold">
+              {/* Zoom % badge: ALWAYS visible beside -+ on all devices */}
+              <span className="text-[10px] font-mono font-semibold text-blue-400 min-w-[32px] text-center px-1 py-0.2 bg-[#161a24] rounded border border-slate-800">
                 {Math.round(timelineZoom * 100)}%
               </span>
             </div>
 
+            {/* Fit to Timeline (100%) */}
             <button
               onClick={() => setTimelineZoom(1)}
-              className="p-1 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
+              className="p-1 sm:p-1.5 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
               title="Fit Timeline (100%)"
             >
               <Maximize2 className="w-3.5 h-3.5" />
             </button>
+          </div>
 
-            <div className="w-px h-3.5 bg-slate-700 mx-0.5 hidden sm:block" />
-
-            <button className="p-1 hover:text-white cursor-pointer" title="Loop Playback">
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-
-            <button className="p-1 hover:text-white cursor-pointer" title="Undo">
+          {/* Right Tools: Undo & Redo (safely inside screen on mobile) */}
+          <div className="flex items-center space-x-0.5 sm:space-x-1 text-slate-300 shrink-0">
+            <button
+              onClick={onUndo}
+              disabled={canUndo === false}
+              className="p-1 sm:p-1.5 hover:text-white text-slate-300 disabled:opacity-30 rounded hover:bg-[#202634] transition-colors cursor-pointer"
+              title="Undo (Ctrl+Z)"
+            >
               <Undo2 className="w-3.5 h-3.5" />
             </button>
 
-            <button className="p-1 hover:text-white cursor-pointer" title="Redo">
+            <button
+              onClick={onRedo}
+              disabled={canRedo === false}
+              className="p-1 sm:p-1.5 hover:text-white text-slate-300 disabled:opacity-30 rounded hover:bg-[#202634] transition-colors cursor-pointer"
+              title="Redo (Ctrl+Y)"
+            >
               <Redo2 className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -889,29 +970,48 @@ export const Timeline: React.FC<TimelineProps> = ({
         <div
           ref={timelineScrollRef}
           onMouseDown={handleTimelineMouseDown}
+          onTouchStart={handleTimelineTouchStart}
           onClick={e => {
+            if (isTimelinePanMode) return;
             if (e.target === e.currentTarget) {
               onSelectElement(null);
               onSelectAudio?.(null);
             }
           }}
           className={`flex-1 overflow-x-auto overflow-y-auto bg-[#10141c] relative select-none ${
-            isTimelinePanMode ? (isTimelinePanning ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default'
+            isTimelinePanMode ? (isTimelinePanning ? 'cursor-grabbing select-none' : 'cursor-grab') : 'cursor-default'
           }`}
         >
           <div
             style={{
-              minWidth: timelineZoom <= 1 ? '100%' : `${timelineZoom * 100}%`,
-              width: timelineZoom <= 1 ? '100%' : `${timelineZoom * 100}%`,
+              minWidth: `max(100%, ${totalTimelineWidthPx}px)`,
+              width: `max(100%, ${totalTimelineWidthPx}px)`,
             }}
             className="flex flex-col min-h-full relative"
           >
+            {/* Hand Tool Pan Overlay: When active, clicking and dragging anywhere on the timeline surface pans smoothly without triggering clip edits */}
+            {isTimelinePanMode && (
+              <div
+                onMouseDown={handleTimelineMouseDown}
+                onTouchStart={handleTimelineTouchStart}
+                className={`absolute inset-0 z-50 select-none ${
+                  isTimelinePanning ? 'cursor-grabbing' : 'cursor-grab'
+                }`}
+                title="Hand Tool Active: Press and drag left/right to move through the timeline"
+              />
+            )}
             {/* TIME RULER (Sticky to top with sticky left corner) */}
             <div className="h-6 bg-[#161a24] border-b border-[#222834] flex items-center sticky top-0 z-30 select-none shrink-0">
-              {/* Left Header Corner (Screenshot 5: v84.2.5) */}
-              <div className="w-40 sm:w-44 px-3 flex items-center justify-between text-[10px] font-mono text-slate-400 shrink-0 border-r border-[#222834] bg-[#181d28] h-full sticky left-0 z-40">
-                <span className="italic text-slate-500 font-semibold">v84.2.5</span>
-                <span className="text-[9px] uppercase tracking-wider text-slate-400 font-bold">Layers</span>
+              {/* Left Header Corner (Screenshot 5: v84.2.5 Layers) - Hides to the left when isLayerHeadersVisible is false */}
+              <div
+                className={`transition-all duration-200 shrink-0 bg-[#181d28] h-full sticky left-0 z-40 flex items-center justify-between text-[10px] font-mono text-slate-400 ${
+                  isLayerHeadersVisible
+                    ? 'w-40 sm:w-44 px-3 border-r border-[#222834] opacity-100'
+                    : 'w-0 max-w-0 p-0 overflow-hidden border-r-0 opacity-0 pointer-events-none'
+                }`}
+              >
+                <span className="italic text-slate-500 font-semibold truncate">v84.2.5</span>
+                <span className="text-[9px] uppercase tracking-wider text-slate-400 font-bold truncate">Layers</span>
               </div>
 
               {/* Ruler Track with Seconds */}
@@ -996,8 +1096,14 @@ export const Timeline: React.FC<TimelineProps> = ({
                     isSelected ? 'bg-[#1a2130]' : 'hover:bg-[#151922]'
                   }`}
                 >
-                  {/* LEFT TRACK HEADER (Exact match to Screenshot 5: [ ⋮ ] Name [ 👁 ] [ 🔒 ] [ ✕ ]) */}
-                  <div className="w-40 sm:w-44 px-2 flex items-center justify-between text-xs font-medium shrink-0 border-r border-[#222834] bg-[#181d28] h-full sticky left-0 z-20">
+                  {/* LEFT TRACK HEADER (Screenshot 5: [ ⋮ ] Name [ 👁 ] [ 🔒 ] [ ✕ ]) - Collapses to the left */}
+                  <div
+                    className={`transition-all duration-200 shrink-0 bg-[#181d28] h-full sticky left-0 z-20 flex items-center justify-between text-xs font-medium ${
+                      isLayerHeadersVisible
+                        ? 'w-40 sm:w-44 px-2 border-r border-[#222834] opacity-100'
+                        : 'w-0 max-w-0 p-0 overflow-hidden border-r-0 opacity-0 pointer-events-none'
+                    }`}
+                  >
                     
                     {/* 3 Dots Menu Button */}
                     <div className="relative timeline-menu-container">
@@ -1156,8 +1262,14 @@ export const Timeline: React.FC<TimelineProps> = ({
                     isSelected ? 'bg-[#14281a]' : 'hover:bg-[#151922]'
                   }`}
                 >
-                  {/* Left Track Header */}
-                  <div className="w-40 sm:w-44 px-2 flex items-center justify-between text-xs font-medium shrink-0 border-r border-[#222834] bg-[#181d28] h-full sticky left-0 z-20">
+                  {/* Left Track Header - Collapses to the left */}
+                  <div
+                    className={`transition-all duration-200 shrink-0 bg-[#181d28] h-full sticky left-0 z-20 flex items-center justify-between text-xs font-medium ${
+                      isLayerHeadersVisible
+                        ? 'w-40 sm:w-44 px-2 border-r border-[#222834] opacity-100'
+                        : 'w-0 max-w-0 p-0 overflow-hidden border-r-0 opacity-0 pointer-events-none'
+                    }`}
+                  >
                     <div className="relative timeline-menu-container">
                       <button
                         onClick={e => {

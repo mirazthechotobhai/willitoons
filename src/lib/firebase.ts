@@ -1,22 +1,35 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
 
-// Use configured database ID if provided, otherwise default
-export const db = getFirestore(
-  app,
-  firebaseConfig.firestoreDatabaseId || undefined
-);
+// Configure Firestore with auto-detect long polling for reliable connection in web/iframe sandbox environments
+let firestoreInstance;
+try {
+  firestoreInstance = initializeFirestore(
+    app,
+    {
+      experimentalAutoDetectLongPolling: true,
+    },
+    firebaseConfig.firestoreDatabaseId || undefined
+  );
+} catch {
+  firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId || undefined);
+}
 
-// Test server connectivity on startup (non-blocking)
+export const db = firestoreInstance;
+
+// Test server connectivity on startup (safe, non-blocking check)
 async function testFirestoreConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('Firestore is running in offline cache mode.');
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes('offline') || msg.includes('unavailable') || msg.includes('could not be completed')) {
+      console.info('Firestore operating with local offline cache until backend connects.');
+    } else {
+      console.warn('Firestore initial connection status:', msg);
     }
   }
 }

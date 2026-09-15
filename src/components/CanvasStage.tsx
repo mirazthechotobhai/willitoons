@@ -52,6 +52,10 @@ interface CanvasStageProps {
   canvasRef?: React.RefObject<HTMLDivElement | null>;
   onAddTextElement?: () => void;
   onAddSpeechBubble?: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
 }
 
 export const CanvasStage: React.FC<CanvasStageProps> = ({
@@ -72,6 +76,10 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   canvasRef,
   onAddTextElement,
   onAddSpeechBubble,
+  onUndo,
+  onRedo,
+  canUndo = true,
+  canRedo = true,
 }) => {
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const stageViewportRef = useRef<HTMLDivElement | null>(null);
@@ -689,126 +697,120 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       </div>
 
       {/* FLOATING PLAYBACK & VIEW CONTROL BAR (Professional Polish clean studio theme) */}
-      <div className="h-11 bg-white border-t border-slate-200 px-3 flex items-center justify-between text-xs text-slate-700 z-10 shrink-0 shadow-sm">
+      <div className="h-10 sm:h-11 bg-white border-t border-slate-200 px-1 sm:px-2 md:px-3 flex items-center justify-between text-xs text-slate-700 z-10 shrink-0 shadow-sm w-full min-w-0 flex-nowrap overflow-x-auto no-scrollbar">
         
-        {/* Left Actions: Multi Select, Layer Duplicate, Duplicate, Split, Camera */}
-        <div className="flex items-center space-x-1 sm:space-x-1.5">
+        {/* Left Actions: Multi Select, Duplicate, Split, Camera */}
+        <div className="flex items-center space-x-0.5 sm:space-x-1 shrink-0">
           <button
             onClick={() => setIsMultiSelect(!isMultiSelect)}
-            className={`flex items-center space-x-1 px-2 py-1 rounded transition-colors cursor-pointer ${
+            title="Multi Select Elements"
+            className={`flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 rounded transition-colors cursor-pointer ${
               isMultiSelect ? 'bg-blue-50 text-blue-600 font-semibold border border-blue-200' : 'hover:bg-slate-100 text-slate-600 hover:text-slate-900'
             }`}
           >
-            <CheckSquare className="w-3.5 h-3.5" />
-            <span className="font-semibold text-[11px] hidden sm:inline">Multi Select</span>
+            <CheckSquare className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            <span className="font-semibold text-[11px] hidden xl:inline">Multi Select</span>
           </button>
 
           <button
             onClick={() => selectedElementId && onDuplicateElement(selectedElementId)}
             disabled={!selectedElementId}
-            className="flex items-center space-x-1 px-2 py-1 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 disabled:opacity-35 transition-colors cursor-pointer"
+            title="Duplicate Selected Element"
+            className="flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 disabled:opacity-35 transition-colors cursor-pointer"
           >
-            <Copy className="w-3.5 h-3.5" />
-            <span className="text-[11px] hidden sm:inline">Duplicate</span>
+            <Copy className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            <span className="text-[11px] hidden xl:inline">Duplicate</span>
           </button>
 
           <button
             title="Split element at playhead"
-            className="flex items-center space-x-1 px-2 py-1 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+            className="flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
           >
-            <Scissors className="w-3.5 h-3.5" />
-            <span className="text-[11px] hidden md:inline">Split</span>
+            <Scissors className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            <span className="text-[11px] hidden xl:inline">Split</span>
           </button>
 
           <button
             title="Add Camera Motion"
-            className="flex items-center space-x-1 px-2 py-1 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+            className="flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
           >
-            <Camera className="w-3.5 h-3.5" />
-            <span className="text-[11px] hidden md:inline">Camera</span>
+            <Camera className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            <span className="text-[11px] hidden xl:inline">Camera</span>
           </button>
         </div>
 
-        {/* Center Transport Controls: Jump to Start, -5s, Play/Pause, Scene, +5s, Timecode, Speed */}
-        <div className="flex items-center space-x-1.5 sm:space-x-2">
+        {/* Center Transport Controls: Jump to Start, -5s, Play/Pause, Scene, +5s, Timecode */}
+        <div className="flex items-center space-x-0.5 sm:space-x-1 shrink-0">
           <button
             onClick={() => onSeek(0)}
             title="Jump to Start"
-            className="p-1 hover:bg-slate-100 hover:text-slate-900 text-slate-600 rounded cursor-pointer transition-colors"
+            className="p-0.5 sm:p-1 hover:bg-slate-100 hover:text-slate-900 text-slate-600 rounded cursor-pointer transition-colors"
           >
-            <SkipBack className="w-4 h-4" />
+            <SkipBack className="w-3 h-3 sm:w-3.5 sm:h-3.5 md:w-4 md:h-4" />
           </button>
 
+          {/* Back 5s */}
           <button
             onClick={() => onSeek(Math.max(0, currentTime - 5))}
             title="Back 5s"
-            className="flex items-center space-x-0.5 px-1.5 py-0.5 hover:bg-slate-100 hover:text-slate-900 text-slate-600 rounded cursor-pointer text-[11px] font-bold transition-colors"
+            className="p-0.5 sm:p-1 flex items-center space-x-0.5 hover:bg-slate-100 hover:text-slate-900 text-slate-600 rounded cursor-pointer transition-colors"
           >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>5</span>
+            <RotateCcw className="w-3 h-3 sm:w-3.5 sm:h-3.5 md:w-4 md:h-4" />
+            <span className="text-[10px] sm:text-[11px] font-bold hidden sm:inline">5</span>
           </button>
 
-          {/* Big Play / Pause Button */}
+          {/* Play / Pause Button */}
           <button
             onClick={onTogglePlay}
-            className="w-8 h-8 flex items-center justify-center bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white rounded-full shadow-sm transition-all cursor-pointer"
+            title={isPlaying ? 'Pause' : 'Play'}
+            className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 flex items-center justify-center bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white rounded-full shadow-xs transition-all cursor-pointer shrink-0"
           >
             {isPlaying ? (
-              <Pause className="w-4 h-4 fill-current" />
+              <Pause className="w-3 h-3 sm:w-3.5 sm:h-3.5 md:w-4 md:h-4 fill-current" />
             ) : (
-              <Play className="w-4 h-4 fill-current ml-0.5" />
+              <Play className="w-3 h-3 sm:w-3.5 sm:h-3.5 md:w-4 md:h-4 fill-current ml-0.5" />
             )}
           </button>
 
           <button
             title="Preview Current Scene"
             onClick={() => onSeek(0)}
-            className="p-1 hover:bg-slate-100 hover:text-slate-900 text-slate-600 rounded cursor-pointer transition-colors"
+            className="hidden sm:inline-flex p-0.5 sm:p-1 hover:bg-slate-100 hover:text-slate-900 text-slate-600 rounded cursor-pointer transition-colors"
           >
-            <Film className="w-4 h-4" />
+            <Film className="w-3 h-3 sm:w-3.5 sm:h-3.5 md:w-4 md:h-4" />
           </button>
 
+          {/* Forward 5s */}
           <button
             onClick={() => onSeek(Math.min(scene.duration, currentTime + 5))}
             title="Forward 5s"
-            className="flex items-center space-x-0.5 px-1.5 py-0.5 hover:bg-slate-100 hover:text-slate-900 text-slate-600 rounded cursor-pointer text-[11px] font-bold transition-colors"
+            className="p-0.5 sm:p-1 flex items-center space-x-0.5 hover:bg-slate-100 hover:text-slate-900 text-slate-600 rounded cursor-pointer transition-colors"
           >
-            <RotateCw className="w-3.5 h-3.5" />
-            <span>5</span>
+            <RotateCw className="w-3 h-3 sm:w-3.5 sm:h-3.5 md:w-4 md:h-4" />
+            <span className="text-[10px] sm:text-[11px] font-bold hidden sm:inline">5</span>
           </button>
 
-          {/* Timecode & Speed */}
-          <div className="flex items-center space-x-1.5 px-2 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono text-xs font-semibold text-slate-800">
+          {/* Timecode */}
+          <div className="flex items-center space-x-1 px-1 sm:px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono text-[10px] sm:text-xs font-semibold text-slate-800">
             <span className="text-blue-600 font-bold">{formatTimecode(currentTime)}</span>
-            <span className="text-slate-400">/</span>
-            <span className="text-slate-500">{formatTimecode(scene.duration)}</span>
+            <span className="text-slate-400 hidden sm:inline">/</span>
+            <span className="text-slate-500 hidden sm:inline">{formatTimecode(scene.duration)}</span>
           </div>
-
-          <button
-            onClick={() => {
-              const speeds = [0.5, 1, 1.5, 2];
-              const next = speeds[(speeds.indexOf(playbackSpeed) + 1) % speeds.length];
-              setPlaybackSpeed(next);
-            }}
-            className="px-2 py-0.5 text-[11px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded cursor-pointer transition-colors"
-          >
-            {playbackSpeed}x
-          </button>
         </div>
 
-        {/* Right Canvas Tools: Pan, Zoom Slider, Fit, Reset, Undo, Redo, Zoom Controls */}
-        <div className="flex items-center space-x-1.5 sm:space-x-2">
+        {/* Right Canvas Tools: Hand, Zoom Slider, Fit, Undo, Redo, Zoom Controls (+/- side by side without %) */}
+        <div className="flex items-center space-x-0.5 sm:space-x-1 shrink-0">
           <button
             onClick={() => setIsPanMode(!isPanMode)}
             title="Hand Tool (Drag to Pan Canvas anywhere) - Hold Space"
-            className={`p-1.5 rounded cursor-pointer transition-colors ${
+            className={`p-0.5 sm:p-1 md:p-1.5 rounded cursor-pointer transition-colors ${
               isPanActive ? 'bg-blue-600 text-white shadow-xs' : 'hover:bg-slate-100 text-slate-600'
             }`}
           >
-            <Hand className="w-4 h-4" />
+            <Hand className="w-3 h-3 sm:w-3.5 sm:h-3.5 md:w-4 md:h-4" />
           </button>
 
-          {/* Zoom Slider with Magnifier (10% to 2000% Unlimited Zoom) */}
+          {/* Zoom Slider with Magnifier (Desktop only) */}
           <div className="hidden lg:flex items-center space-x-1.5">
             <Search className="w-3.5 h-3.5 text-slate-400" />
             <input
@@ -818,8 +820,8 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
               step="0.05"
               value={zoomScale}
               onChange={e => onChangeZoomScale(parseFloat(e.target.value))}
-              className="w-24 accent-blue-600 h-1 cursor-pointer"
-              title={`Canvas Zoom: ${Math.round(zoomScale * 100)}% (Unlimited Stage Zoom)`}
+              className="w-14 xl:w-16 accent-blue-600 h-1 cursor-pointer"
+              title={`Canvas Zoom: ${Math.round(zoomScale * 100)}%`}
             />
           </div>
 
@@ -829,50 +831,54 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
               setPanOffset({ x: 0, y: 0 });
             }}
             title="Fit Canvas to View & Center (100%)"
-            className="p-1.5 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded cursor-pointer transition-colors hidden sm:inline-flex"
+            className="p-0.5 sm:p-1 md:p-1.5 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded cursor-pointer transition-colors"
           >
-            <Maximize className="w-4 h-4" />
+            <Maximize className="w-3 h-3 sm:w-3.5 sm:h-3.5 md:w-4 md:h-4" />
           </button>
 
           <button
-            title="Undo"
-            className="p-1.5 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded cursor-pointer transition-colors"
+            onClick={onUndo}
+            disabled={canUndo === false}
+            title="Undo (Ctrl+Z)"
+            className="p-0.5 sm:p-1 md:p-1.5 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded cursor-pointer transition-colors disabled:opacity-30"
           >
-            <Undo2 className="w-4 h-4" />
+            <Undo2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 md:w-4 md:h-4" />
           </button>
 
           <button
-            title="Redo"
-            className="p-1.5 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded cursor-pointer transition-colors"
+            onClick={onRedo}
+            disabled={canRedo === false}
+            title="Redo (Ctrl+Y)"
+            className="p-0.5 sm:p-1 md:p-1.5 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded cursor-pointer transition-colors disabled:opacity-30"
           >
-            <Redo2 className="w-4 h-4" />
+            <Redo2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 md:w-4 md:h-4" />
           </button>
 
-          <div className="h-4 w-px bg-slate-200" />
+          <div className="h-3.5 sm:h-4 w-px bg-slate-200 mx-0.5" />
 
-          <button
-            onClick={() => {
-              const step = zoomScale > 4 ? 1.0 : zoomScale > 2 ? 0.5 : zoomScale > 1 ? 0.2 : 0.1;
-              onChangeZoomScale(Math.max(0.1, Math.round((zoomScale - step) * 100) / 100));
-            }}
-            className="p-1 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded cursor-pointer transition-colors"
-            title="Zoom Out"
-          >
-            <ZoomOut className="w-3.5 h-3.5" />
-          </button>
-          <span className="text-[11px] font-mono text-slate-600 min-w-[42px] text-center font-medium">
-            {Math.round(zoomScale * 100)}%
-          </span>
-          <button
-            onClick={() => {
-              const step = zoomScale >= 4 ? 1.0 : zoomScale >= 2 ? 0.5 : zoomScale >= 1 ? 0.2 : 0.1;
-              onChangeZoomScale(Math.min(20.0, Math.round((zoomScale + step) * 100) / 100));
-            }}
-            className="p-1 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded cursor-pointer transition-colors"
-            title="Zoom In (Up to 2000%)"
-          >
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
+          {/* Canvas Zoom In & Out icons side by side without % (Always visible, clean and compact) */}
+          <div className="flex items-center space-x-0.5 bg-slate-100 border border-slate-200 rounded p-0.5">
+            <button
+              onClick={() => {
+                const step = zoomScale > 4 ? 1.0 : zoomScale > 2 ? 0.5 : zoomScale > 1 ? 0.2 : 0.1;
+                onChangeZoomScale(Math.max(0.1, Math.round((zoomScale - step) * 100) / 100));
+              }}
+              className="p-0.5 sm:p-1 hover:bg-slate-200 text-slate-600 hover:text-slate-900 rounded cursor-pointer transition-colors"
+              title="Zoom Out Canvas (-)"
+            >
+              <ZoomOut className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            </button>
+            <button
+              onClick={() => {
+                const step = zoomScale >= 4 ? 1.0 : zoomScale >= 2 ? 0.5 : zoomScale >= 1 ? 0.2 : 0.1;
+                onChangeZoomScale(Math.min(20.0, Math.round((zoomScale + step) * 100) / 100));
+              }}
+              className="p-0.5 sm:p-1 hover:bg-slate-200 text-slate-600 hover:text-slate-900 rounded cursor-pointer transition-colors"
+              title="Zoom In Canvas (+)"
+            >
+              <ZoomIn className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            </button>
+          </div>
         </div>
 
       </div>

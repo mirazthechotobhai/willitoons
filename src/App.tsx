@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   CharacterModel,
   StageElement,
@@ -32,6 +32,69 @@ export default function App() {
   const [project, setProject] = useState<ProjectSettings>(INITIAL_PROJECT);
   const [scenes, setScenes] = useState<Scene[]>(INITIAL_SCENES);
   const [activeSceneIndex, setActiveSceneIndex] = useState(0);
+
+  // Undo / Redo History Tracking
+  const [history, setHistory] = useState<Scene[][]>([INITIAL_SCENES]);
+  const [historyIndex, setHistoryIndex] = useState<number>(0);
+  const isUndoRedoActionRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (isUndoRedoActionRef.current) {
+      isUndoRedoActionRef.current = false;
+      return;
+    }
+    setHistory(prev => {
+      if (prev[historyIndex] === scenes) return prev;
+      const nextHistory = [...prev.slice(0, historyIndex + 1), scenes].slice(-30);
+      setHistoryIndex(nextHistory.length - 1);
+      return nextHistory;
+    });
+  }, [scenes]);
+
+  const handleUndo = useCallback(() => {
+    if (historyIndex > 0) {
+      const prevIdx = historyIndex - 1;
+      isUndoRedoActionRef.current = true;
+      setHistoryIndex(prevIdx);
+      setScenes(history[prevIdx]);
+    }
+  }, [historyIndex, history]);
+
+  const handleRedo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      const nextIdx = historyIndex + 1;
+      isUndoRedoActionRef.current = true;
+      setHistoryIndex(nextIdx);
+      setScenes(history[nextIdx]);
+    }
+  }, [historyIndex, history]);
+
+  // Global Keyboard Shortcuts for Undo (Ctrl+Z) and Redo (Ctrl+Y / Ctrl+Shift+Z)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target as HTMLElement)?.isContentEditable
+      ) {
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        if (e.shiftKey) {
+          e.preventDefault();
+          handleRedo();
+        } else {
+          e.preventDefault();
+          handleUndo();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleUndo, handleRedo]);
 
   // Characters Library State
   const [characters, setCharacters] = useState<CharacterModel[]>(DEFAULT_CHARACTERS);
@@ -72,6 +135,8 @@ export default function App() {
   const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null);
   const [activeLeftTab, setActiveLeftTab] = useState<LeftNavTab>(null);
   const [activeRightTab, setActiveRightTab] = useState<RightNavTab>(null);
+  const [isMobileLeftRailOpen, setIsMobileLeftRailOpen] = useState(false);
+  const [isMobileRightRailOpen, setIsMobileRightRailOpen] = useState(false);
 
   const handleSelectElement = (id: string | null) => {
     setSelectedElementId(id);
@@ -509,23 +574,43 @@ export default function App() {
         onUpdateProject={updates => setProject(prev => ({ ...prev, ...updates }))}
         onSave={() => {}}
         onExportClick={() => setIsExportModalOpen(true)}
+        onToggleMobileLeftRail={() => {
+          setIsMobileLeftRailOpen(prev => {
+            const next = !prev;
+            if (!next) {
+              setActiveLeftTab(null);
+            }
+            return next;
+          });
+          setIsMobileRightRailOpen(false);
+        }}
+        isMobileLeftRailOpen={isMobileLeftRailOpen}
+        onToggleMobileRightRail={() => {
+          setIsMobileRightRailOpen(prev => !prev);
+          setIsMobileLeftRailOpen(false);
+          setActiveLeftTab(null);
+        }}
+        isMobileRightRailOpen={isMobileRightRailOpen}
       />
 
       {/* 2. MAIN WORKSPACE */}
       <div className="flex-1 flex overflow-hidden relative">
         
-        {/* LEFT VERTICAL RAIL (Screenshot 1: Character, Media, Templates, AI badges) */}
-        <LeftSidebarRail
-          activeTab={activeLeftTab}
-          onSelectTab={tab => setActiveLeftTab(tab)}
-          onOpenAnimIKStudio={() => {
-            setCharacterBeingEdited(DEFAULT_CHARACTERS[0]);
-            setIsCharacterStudioOpen(true);
-          }}
-        />
+        {/* DESKTOP LEFT VERTICAL RAIL (Screenshot 1: Character, Media, Templates, AI badges) - Hidden on mobile by default */}
+        <div className="hidden md:flex shrink-0">
+          <LeftSidebarRail
+            activeTab={activeLeftTab}
+            onSelectTab={tab => setActiveLeftTab(tab)}
+            onOpenAnimIKStudio={() => {
+              setCharacterBeingEdited(DEFAULT_CHARACTERS[0]);
+              setIsCharacterStudioOpen(true);
+            }}
+          />
+        </div>
 
         {/* WORKSPACE CENTER COLUMN: UPPER WORKSPACE (CANVAS + INSPECTOR) + BOTTOM TIMELINE */}
-        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* On mobile: takes 100% full screen width by default */}
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0 w-full">
 
           {/* UPPER ROW: Center Canvas Stage + Right Inspector */}
           <div className="flex-1 flex overflow-hidden min-h-0 min-w-0 relative">
@@ -549,6 +634,10 @@ export default function App() {
               canvasRef={canvasStageRef}
               onAddTextElement={() => handleAddTextElement('text')}
               onAddSpeechBubble={() => handleAddTextElement('speechBubble')}
+              onUndo={handleUndo}
+              onRedo={handleRedo}
+              canUndo={historyIndex > 0}
+              canRedo={historyIndex < history.length - 1}
             />
 
             {/* RIGHT COLUMN: ELEMENT INSPECTOR */}
@@ -596,20 +685,67 @@ export default function App() {
             onChangeZoomScale={setZoomScale}
             onUpdateAudioTrack={handleUpdateAudioTrack}
             onDeleteAudioTrack={handleDeleteAudioTrack}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+            canUndo={historyIndex > 0}
+            canRedo={historyIndex < history.length - 1}
           />
 
         </div>
 
-        {/* RIGHT VERTICAL RAIL (Screenshot 1: Asset Library, Effects, Music, Sounds, Tutorials) */}
-        <RightSidebarRail
-          activeTab={activeRightTab}
-          onSelectTab={tab => setActiveRightTab(tab)}
-          hasSelectedElement={!!selectedElement}
-        />
+        {/* DESKTOP RIGHT VERTICAL RAIL (Screenshot 1: Asset Library, Effects, Music, Sounds, Tutorials) - Hidden on mobile by default */}
+        <div className="hidden md:flex shrink-0">
+          <RightSidebarRail
+            activeTab={activeRightTab}
+            onSelectTab={tab => setActiveRightTab(tab)}
+            hasSelectedElement={!!selectedElement}
+          />
+        </div>
 
-        {/* FULL-HEIGHT FLOATING POPUP OVERLAY (Opens on top of both Canvas & Timeline - Canvas & Timeline remain 100% stationary and get maximum height for characters) */}
+        {/* MOBILE FLOATING BACKDROP (Clicking outside closes mobile rails) */}
+        {(isMobileLeftRailOpen || isMobileRightRailOpen) && (
+          <div
+            onClick={() => {
+              setIsMobileLeftRailOpen(false);
+              setIsMobileRightRailOpen(false);
+              setActiveLeftTab(null);
+            }}
+            className="md:hidden absolute inset-0 bg-black/40 z-30 transition-opacity backdrop-blur-xs"
+          />
+        )}
+
+        {/* MOBILE FLOATING LEFT RAIL (Toggled by clicking the website logo on mobile) */}
+        {isMobileLeftRailOpen && (
+          <div className="md:hidden absolute left-0 top-0 bottom-0 z-50 flex shadow-2xl animate-in slide-in-from-left duration-200">
+            <LeftSidebarRail
+              activeTab={activeLeftTab}
+              onSelectTab={tab => setActiveLeftTab(tab)}
+              onOpenAnimIKStudio={() => {
+                setCharacterBeingEdited(DEFAULT_CHARACTERS[0]);
+                setIsCharacterStudioOpen(true);
+              }}
+            />
+          </div>
+        )}
+
+        {/* MOBILE FLOATING RIGHT RAIL (Toggled by clicking the Effect button on top header on mobile) */}
+        {isMobileRightRailOpen && (
+          <div className="md:hidden absolute right-0 top-0 bottom-0 z-50 flex shadow-2xl animate-in slide-in-from-right duration-200">
+            <RightSidebarRail
+              activeTab={activeRightTab}
+              onSelectTab={tab => setActiveRightTab(tab)}
+              hasSelectedElement={!!selectedElement}
+            />
+          </div>
+        )}
+
+        {/* FULL-HEIGHT FLOATING POPUP OVERLAY (Opens on top of both Canvas & Timeline - Canvas & Timeline remain 100% stationary) */}
         {activeLeftTab && activeLeftTab !== 'animIK' && (
-          <div className="absolute left-[68px] top-0 bottom-0 z-40 flex flex-col shadow-[14px_0_40px_rgba(0,0,0,0.22)] border-r border-slate-200 transition-all duration-200 ease-out">
+          <div
+            className={`absolute left-[68px] top-0 bottom-0 z-50 flex flex-col shadow-[14px_0_40px_rgba(0,0,0,0.22)] border-r border-slate-200 transition-all duration-200 ease-out max-w-[calc(100vw-68px)] ${
+              isMobileLeftRailOpen ? 'flex' : 'hidden md:flex'
+            }`}
+          >
             {/* Character Drawer */}
             {activeLeftTab === 'character' && (
               <CharacterDrawer

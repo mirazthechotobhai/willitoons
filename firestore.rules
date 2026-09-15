@@ -16,5 +16,9 @@ service cloud.firestore {
       allow create, update: if isValidCharacter(request.resource.data);
       allow delete: if true;
     }
+
+    match /test/{testId} {
+      allow read: if true;
+    }
   }
 }

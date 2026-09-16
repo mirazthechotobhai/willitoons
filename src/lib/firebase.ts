@@ -1,44 +1,88 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { initializeFirestore, getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
+import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
 
-// Configure Firestore with forced long-polling for rock-solid connection in web iframe sandbox environments
-let firestoreInstance;
-try {
-  firestoreInstance = initializeFirestore(
-    app,
-    {
-      experimentalForceLongPolling: true,
-    },
-    firebaseConfig.firestoreDatabaseId || undefined
-  );
-} catch {
-  firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId || undefined);
+// Initialize Firestore strictly as prescribed in firebase-skill
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const auth = getAuth(app);
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
 }
 
-export const db = firestoreInstance;
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
 
-// Non-blocking, graceful connection check with delay to allow SDK initialization
-async function testFirestoreConnection() {
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const isPermissionError =
+    error instanceof Error &&
+    (error.message.includes('permission-denied') || error.message.includes('Missing or insufficient permissions'));
+
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo:
+        auth.currentUser?.providerData?.map(provider => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
+    },
+    operationType,
+    path,
+  };
+
+  if (isPermissionError) {
+    console.error('Firestore Permission Error:', JSON.stringify(errInfo));
+    throw new Error(JSON.stringify(errInfo));
+  } else {
+    // Graceful logging for offline/transient network events
+    console.info(`Firestore (${operationType} at ${path}):`, errInfo.error);
+  }
+}
+
+// Non-blocking connection test conforming to firebase-skill
+async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (msg.includes('offline') || msg.includes('unavailable') || msg.includes('could not be completed')) {
-      console.info('Firestore operating with offline persistence until cloud sync connects.');
-    } else {
-      console.warn('Firestore connectivity status:', msg);
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.info('Firestore is currently operating in offline mode.');
     }
   }
 }
 
 if (typeof window !== 'undefined') {
-  // Run safely in background after page load so it never blocks UI or throws on initial render
+  // Test connection after initial paint
   setTimeout(() => {
-    testFirestoreConnection();
-  }, 2000);
+    testConnection();
+  }, 1000);
 }
 
 export default app;

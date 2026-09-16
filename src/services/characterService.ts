@@ -5,7 +5,7 @@ import {
   getDocs,
   deleteDoc,
 } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { CharacterModel } from '../types';
 
 const CHARACTERS_COLLECTION = 'characters';
@@ -67,7 +67,7 @@ export async function saveCharacterToCloud(
     const docRef = doc(db, CHARACTERS_COLLECTION, targetId);
     await setDoc(docRef, characterToSave, { merge: true });
   } catch (error) {
-    console.warn('Saved to local storage; Firestore will sync when online:', error);
+    handleFirestoreError(error, OperationType.WRITE, `${CHARACTERS_COLLECTION}/${targetId}`);
   }
 
   return characterToSave;
@@ -113,7 +113,7 @@ export async function loadCharactersFromCloud(): Promise<CharacterModel[]> {
 
     return localCharacters;
   } catch (error) {
-    // Network offline, timeout, or unavailable: smoothly return local cache
+    handleFirestoreError(error, OperationType.LIST, CHARACTERS_COLLECTION);
     return localCharacters;
   }
 }
@@ -130,6 +130,6 @@ export async function deleteCharacterFromCloud(characterId: string): Promise<voi
     const docRef = doc(db, CHARACTERS_COLLECTION, characterId);
     await deleteDoc(docRef);
   } catch (error) {
-    console.warn('Deleted from local storage; Firestore sync pending:', error);
+    handleFirestoreError(error, OperationType.DELETE, `${CHARACTERS_COLLECTION}/${characterId}`);
   }
 }

@@ -186,6 +186,12 @@ export const Timeline: React.FC<TimelineProps> = ({
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [editingNameValue, setEditingNameValue] = useState('');
   const [isAddLayerOpen, setIsAddLayerOpen] = useState(false);
+  const [draggingFeedback, setDraggingFeedback] = useState<{
+    id: string;
+    mode: 'move' | 'trim-start' | 'trim-end';
+    startTime: number;
+    duration: number;
+  } | null>(null);
 
   // Format timecode (e.g. 00:00)
   const formatTimecode = (seconds: number) => {
@@ -322,126 +328,254 @@ export const Timeline: React.FC<TimelineProps> = ({
     window.addEventListener('touchend', onTouchEnd);
   };
 
-  // Handle Scrubbing on Ruler
-  const handleRulerMouseDown = (e: React.MouseEvent) => {
+  // Handle Scrubbing on Ruler (Touch & Mouse for ALL devices)
+  const handleRulerPointerDown = (e: React.PointerEvent) => {
     if (!rulerRef.current) return;
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
     const rect = rulerRef.current.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const pct = Math.max(0, Math.min(1, clickX / rect.width));
     onSeek(pct * duration);
     setIsScrubbing(true);
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
+    const target = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    try {
+      target.setPointerCapture(pointerId);
+    } catch (err) {}
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
       const moveX = moveEvent.clientX - rect.left;
       const movePct = Math.max(0, Math.min(1, moveX / rect.width));
       onSeek(movePct * duration);
     };
 
-    const onMouseUp = () => {
+    const onPointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      try {
+        if (target.hasPointerCapture(pointerId)) {
+          target.releasePointerCapture(pointerId);
+        }
+      } catch (err) {}
       setIsScrubbing(false);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
     };
 
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
   };
 
-  // Dragging / Trimming Element Clips on Timeline
-  const handleClipMouseDown = (
-    e: React.MouseEvent,
+  // Dragging / Trimming Visual Element Clips on Timeline (Touch & Mouse for ALL devices)
+  const handleClipPointerDown = (
+    e: React.PointerEvent,
     el: StageElement,
     mode: 'move' | 'trim-start' | 'trim-end'
   ) => {
     if (el.locked || isTimelineLocked || isTimelinePanMode) return;
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
     e.stopPropagation();
     onSelectElement(el.id);
+    onSelectAudio?.(null);
     if (!rulerRef.current) return;
+
+    const target = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    try {
+      target.setPointerCapture(pointerId);
+    } catch (err) {}
 
     const rect = rulerRef.current.getBoundingClientRect();
     const startClientX = e.clientX;
     const initialStart = el.startTime;
     const initialDuration = el.duration;
+    const startDuration = duration;
+    const pxPerSec = (rect.width || 1) / (startDuration || 1);
 
     const precision = timelineZoom >= 3.5 ? 100 : timelineZoom >= 2 ? 20 : 10;
     const roundTime = (val: number) => Math.round(val * precision) / precision;
     onInteractionStart?.();
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      const deltaSec = ((moveEvent.clientX - startClientX) / rect.width) * duration;
+    let hasDragged = false;
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
+      hasDragged = true;
+
+      const deltaSec = (moveEvent.clientX - startClientX) / (pxPerSec || 1);
 
       if (mode === 'move') {
-        const newStart = Math.max(0, Math.min(duration - initialDuration, initialStart + deltaSec));
-        onUpdateElement(el.id, { startTime: roundTime(newStart) });
+        // Move anywhere left/right without restriction
+        const newStart = Math.max(0, initialStart + deltaSec);
+        const roundedStart = roundTime(newStart);
+        onUpdateElement(el.id, { startTime: roundedStart });
+        setDraggingFeedback({
+          id: el.id,
+          mode: 'move',
+          startTime: roundedStart,
+          duration: initialDuration,
+        });
       } else if (mode === 'trim-end') {
-        const newDur = Math.max(0.5, Math.min(duration - initialStart, initialDuration + deltaSec));
-        onUpdateElement(el.id, { duration: roundTime(newDur) });
+        // Stretch or shrink from the right edge
+        const newDur = Math.max(0.2, initialDuration + deltaSec);
+        const roundedDur = roundTime(newDur);
+        onUpdateElement(el.id, { duration: roundedDur });
+        setDraggingFeedback({
+          id: el.id,
+          mode: 'trim-end',
+          startTime: initialStart,
+          duration: roundedDur,
+        });
       } else if (mode === 'trim-start') {
-        const proposedStart = Math.max(0, Math.min(initialStart + initialDuration - 0.5, initialStart + deltaSec));
+        // Stretch or shrink from the left edge
+        const proposedStart = Math.max(0, Math.min(initialStart + initialDuration - 0.2, initialStart + deltaSec));
         const diff = proposedStart - initialStart;
+        const newDur = Math.max(0.2, initialDuration - diff);
+        const roundedStart = roundTime(proposedStart);
+        const roundedDur = roundTime(newDur);
         onUpdateElement(el.id, {
-          startTime: roundTime(proposedStart),
-          duration: roundTime(initialDuration - diff),
+          startTime: roundedStart,
+          duration: roundedDur,
+        });
+        setDraggingFeedback({
+          id: el.id,
+          mode: 'trim-start',
+          startTime: roundedStart,
+          duration: roundedDur,
         });
       }
     };
 
-    const onMouseUp = () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-      onInteractionEnd?.();
+    const onPointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      try {
+        if (target.hasPointerCapture(pointerId)) {
+          target.releasePointerCapture(pointerId);
+        }
+      } catch (err) {}
+
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+
+      setDraggingFeedback(null);
+      if (hasDragged) {
+        onInteractionEnd?.();
+      }
     };
 
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
   };
 
-  // Dragging / Trimming Audio Clips on Timeline (for precise audio syncing)
-  const handleAudioClipMouseDown = (
-    e: React.MouseEvent,
+  // Dragging / Trimming Audio Clips on Timeline (Touch & Mouse for ALL devices)
+  const handleAudioClipPointerDown = (
+    e: React.PointerEvent,
     track: AudioTrackItem,
     mode: 'move' | 'trim-start' | 'trim-end'
   ) => {
     if (track.locked || isTimelineLocked || isTimelinePanMode) return;
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
     e.stopPropagation();
+    onSelectAudio?.(track.id);
+    onSelectElement(null);
     if (!rulerRef.current) return;
+
+    const target = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    try {
+      target.setPointerCapture(pointerId);
+    } catch (err) {}
 
     const rect = rulerRef.current.getBoundingClientRect();
     const startClientX = e.clientX;
     const initialStart = track.startTime;
     const initialDuration = track.duration;
+    const startDuration = duration;
+    const pxPerSec = (rect.width || 1) / (startDuration || 1);
 
     const precision = timelineZoom >= 3.5 ? 100 : timelineZoom >= 2 ? 20 : 10;
     const roundTime = (val: number) => Math.round(val * precision) / precision;
     onInteractionStart?.();
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      const deltaSec = ((moveEvent.clientX - startClientX) / rect.width) * duration;
+    let hasDragged = false;
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
+      hasDragged = true;
+
+      const deltaSec = (moveEvent.clientX - startClientX) / (pxPerSec || 1);
 
       if (mode === 'move') {
-        const newStart = Math.max(0, Math.min(duration - initialDuration, initialStart + deltaSec));
-        onUpdateAudioTrack(track.id, { startTime: roundTime(newStart) });
+        // Move anywhere left/right without restriction
+        const newStart = Math.max(0, initialStart + deltaSec);
+        const roundedStart = roundTime(newStart);
+        onUpdateAudioTrack(track.id, { startTime: roundedStart });
+        setDraggingFeedback({
+          id: track.id,
+          mode: 'move',
+          startTime: roundedStart,
+          duration: initialDuration,
+        });
       } else if (mode === 'trim-end') {
-        const newDur = Math.max(0.5, Math.min(duration - initialStart, initialDuration + deltaSec));
-        onUpdateAudioTrack(track.id, { duration: roundTime(newDur) });
+        // Stretch or shrink from the right edge
+        const newDur = Math.max(0.2, initialDuration + deltaSec);
+        const roundedDur = roundTime(newDur);
+        onUpdateAudioTrack(track.id, { duration: roundedDur });
+        setDraggingFeedback({
+          id: track.id,
+          mode: 'trim-end',
+          startTime: initialStart,
+          duration: roundedDur,
+        });
       } else if (mode === 'trim-start') {
-        const proposedStart = Math.max(0, Math.min(initialStart + initialDuration - 0.5, initialStart + deltaSec));
+        // Stretch or shrink from the left edge
+        const proposedStart = Math.max(0, Math.min(initialStart + initialDuration - 0.2, initialStart + deltaSec));
         const diff = proposedStart - initialStart;
+        const newDur = Math.max(0.2, initialDuration - diff);
+        const roundedStart = roundTime(proposedStart);
+        const roundedDur = roundTime(newDur);
         onUpdateAudioTrack(track.id, {
-          startTime: roundTime(proposedStart),
-          duration: roundTime(initialDuration - diff),
+          startTime: roundedStart,
+          duration: roundedDur,
+        });
+        setDraggingFeedback({
+          id: track.id,
+          mode: 'trim-start',
+          startTime: roundedStart,
+          duration: roundedDur,
         });
       }
     };
 
-    const onMouseUp = () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-      onInteractionEnd?.();
+    const onPointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      try {
+        if (target.hasPointerCapture(pointerId)) {
+          target.releasePointerCapture(pointerId);
+        }
+      } catch (err) {}
+
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+
+      setDraggingFeedback(null);
+      if (hasDragged) {
+        onInteractionEnd?.();
+      }
     };
 
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
   };
 
   // Layer Reordering Handlers (Exact match to Screenshot 6 menu)
@@ -664,6 +798,9 @@ export const Timeline: React.FC<TimelineProps> = ({
   // Visual Elements ordered in descending zIndex (top of timeline = top layer on canvas)
   const visualLayers = [...currentScene.elements].sort((a, b) => b.zIndex - a.zIndex);
   const audioLayers = currentScene.audioTracks || [];
+
+  const selectedElement = currentScene.elements.find(el => el.id === selectedElementId);
+  const selectedAudio = currentScene.audioTracks?.find(at => at.id === selectedAudioId);
 
   const playheadPercent = Math.max(0, Math.min(100, (currentTime / duration) * 100));
 
@@ -949,6 +1086,63 @@ export const Timeline: React.FC<TimelineProps> = ({
             </button>
           </div>
 
+          {/* Quick timing fine-tune bar for selected element or audio track (hidden on mobile, visible on desktop/tablet) */}
+          {(selectedElement || selectedAudio) && (
+            <div className="hidden sm:flex items-center space-x-1 bg-[#10141c] px-1.5 py-0.5 rounded border border-blue-500/40 text-[11px] text-blue-200 shrink-0 select-none">
+              <span className="font-semibold text-white truncate max-w-[60px] sm:max-w-[90px]">
+                {selectedElement?.name || selectedAudio?.name}
+              </span>
+              <div className="w-px h-3 bg-slate-700 mx-0.5" />
+              <span className="text-[10px] text-slate-400 hidden sm:inline">Move:</span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedElement) onUpdateElement(selectedElement.id, { startTime: Math.max(0, Math.round((selectedElement.startTime - 0.5) * 10) / 10) });
+                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { startTime: Math.max(0, Math.round((selectedAudio.startTime - 0.5) * 10) / 10) });
+                }}
+                className="px-1 py-0.5 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer font-mono"
+                title="Nudge Left 0.5s"
+              >
+                ◀ -0.5s
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedElement) onUpdateElement(selectedElement.id, { startTime: Math.round((selectedElement.startTime + 0.5) * 10) / 10 });
+                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { startTime: Math.round((selectedAudio.startTime + 0.5) * 10) / 10 });
+                }}
+                className="px-1 py-0.5 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer font-mono"
+                title="Nudge Right 0.5s"
+              >
+                +0.5s ▶
+              </button>
+              <div className="w-px h-3 bg-slate-700 mx-0.5" />
+              <span className="text-[10px] text-slate-400 hidden sm:inline">Length:</span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedElement) onUpdateElement(selectedElement.id, { duration: Math.max(0.2, Math.round((selectedElement.duration - 0.5) * 10) / 10) });
+                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { duration: Math.max(0.2, Math.round((selectedAudio.duration - 0.5) * 10) / 10) });
+                }}
+                className="px-1 py-0.5 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer font-mono"
+                title="Shorten Duration -0.5s"
+              >
+                -0.5s
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedElement) onUpdateElement(selectedElement.id, { duration: Math.round((selectedElement.duration + 0.5) * 10) / 10 });
+                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { duration: Math.round((selectedAudio.duration + 0.5) * 10) / 10 });
+                }}
+                className="px-1 py-0.5 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer font-mono"
+                title="Lengthen Duration +0.5s"
+              >
+                +0.5s
+              </button>
+            </div>
+          )}
+
           {/* Right Tools: Undo & Redo (safely inside screen on mobile) */}
           <div className="flex items-center space-x-0.5 sm:space-x-1 text-slate-300 shrink-0">
             <button
@@ -1025,8 +1219,9 @@ export const Timeline: React.FC<TimelineProps> = ({
               {/* Ruler Track with Seconds */}
               <div
                 ref={rulerRef}
-                onMouseDown={handleRulerMouseDown}
-                className="flex-1 h-full relative cursor-pointer overflow-hidden"
+                onPointerDown={handleRulerPointerDown}
+                className="flex-1 h-full relative cursor-pointer overflow-hidden touch-none select-none"
+                style={{ touchAction: 'none' }}
               >
                 {timelineTicks.map((t, idx) => {
                   const tickPct = (t.time / duration) * 100;
@@ -1204,38 +1399,54 @@ export const Timeline: React.FC<TimelineProps> = ({
                   {/* RIGHT TRACK LANE CLIP (Screenshot 5) */}
                   <div className="flex-1 h-full relative overflow-hidden">
                     
-                    {/* Visual Clip Bar */}
+                    {/* Visual Clip Bar - Press & Drag anywhere to move left/right */}
                     <div
-                      onMouseDown={e => handleClipMouseDown(e, el, 'move')}
-                      className={`absolute top-1 bottom-1 rounded px-2.5 flex items-center justify-between text-xs font-semibold shadow-xs transition-all overflow-hidden ${trackColor} ${
+                      onPointerDown={e => handleClipPointerDown(e, el, 'move')}
+                      className={`absolute top-1 bottom-1 rounded px-2 flex items-center justify-between text-xs font-semibold shadow-xs transition-all select-none touch-none ${trackColor} ${
                         isLocked ? 'cursor-not-allowed opacity-80' : 'cursor-grab active:cursor-grabbing'
                       } ${!isVisible ? 'opacity-35 grayscale' : ''} ${
-                        isSelected ? 'ring-2 ring-blue-400 z-10' : ''
+                        isSelected ? 'ring-2 ring-blue-400 ring-offset-1 ring-offset-[#10141c] z-20 shadow-lg' : 'z-10'
                       }`}
                       style={{
                         left: `${startPct}%`,
-                        width: `${Math.max(4, widthPct)}%`,
+                        width: `${Math.max(3.5, widthPct)}%`,
+                        touchAction: 'none',
                       }}
                     >
-                      {/* Left Trim Handle */}
+                      {/* Left Trim Handle - Drag to stretch/shrink from start */}
                       {!isLocked && (
                         <div
-                          onMouseDown={e => handleClipMouseDown(e, el, 'trim-start')}
-                          className="w-1.5 h-full absolute left-0 top-0 cursor-ew-resize hover:bg-white/30"
-                        />
+                          onPointerDown={e => handleClipPointerDown(e, el, 'trim-start')}
+                          className="w-3.5 sm:w-3 h-full absolute left-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 active:bg-white/60 text-white/80 touch-none z-30"
+                          style={{ touchAction: 'none' }}
+                          title="Drag to trim / stretch start time"
+                        >
+                          <div className="w-0.5 h-3 bg-white/80 rounded-full" />
+                        </div>
                       )}
 
-                      <div className="flex items-center space-x-1.5 truncate pl-0.5">
+                      <div className="flex items-center space-x-1.5 truncate px-2.5">
                         <IconComp className="w-3 h-3 shrink-0 opacity-85" />
-                        <span className="truncate text-[11px]">{trackLabel}</span>
+                        <span className="truncate text-[11px] select-none">{trackLabel}</span>
                       </div>
 
-                      {/* Right Trim Handle */}
+                      {/* Right Trim Handle - Drag to stretch/shrink from end */}
                       {!isLocked && (
                         <div
-                          onMouseDown={e => handleClipMouseDown(e, el, 'trim-end')}
-                          className="w-1.5 h-full absolute right-0 top-0 cursor-ew-resize hover:bg-white/30"
-                        />
+                          onPointerDown={e => handleClipPointerDown(e, el, 'trim-end')}
+                          className="w-3.5 sm:w-3 h-full absolute right-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 active:bg-white/60 text-white/80 touch-none z-30"
+                          style={{ touchAction: 'none' }}
+                          title="Drag to trim / stretch duration"
+                        >
+                          <div className="w-0.5 h-3 bg-white/80 rounded-full" />
+                        </div>
+                      )}
+
+                      {/* Real-time dragging/trimming feedback badge */}
+                      {draggingFeedback?.id === el.id && (
+                        <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-slate-950 text-blue-300 text-[10px] font-mono px-2 py-0.5 rounded shadow-xl border border-blue-500/60 whitespace-nowrap z-50 pointer-events-none">
+                          {draggingFeedback.startTime.toFixed(1)}s - {(draggingFeedback.startTime + draggingFeedback.duration).toFixed(1)}s ({draggingFeedback.duration.toFixed(1)}s)
+                        </div>
                       )}
                     </div>
 
@@ -1356,31 +1567,31 @@ export const Timeline: React.FC<TimelineProps> = ({
                   {/* Right Track Lane (Green Waveform bar with sub-second drag & trim) */}
                   <div className="flex-1 h-full relative overflow-hidden">
                     <div
-                      onMouseDown={e => {
-                        onSelectAudio?.(track.id);
-                        onSelectElement(null);
-                        handleAudioClipMouseDown(e, track, 'move');
-                      }}
-                      className={`absolute top-1 bottom-1 rounded px-2.5 flex items-center justify-between text-xs font-semibold bg-[#15803d] text-white shadow-xs overflow-hidden ${
-                        isSelected ? 'ring-2 ring-lime-400 shadow-md' : ''
+                      onPointerDown={e => handleAudioClipPointerDown(e, track, 'move')}
+                      className={`absolute top-1 bottom-1 rounded px-2 flex items-center justify-between text-xs font-semibold bg-[#15803d] text-white shadow-xs select-none touch-none ${
+                        isSelected ? 'ring-2 ring-lime-400 ring-offset-1 ring-offset-[#10141c] shadow-lg z-20' : 'z-10'
                       } ${
                         track.isMuted ? 'opacity-40 grayscale' : ''
                       } ${isLocked ? 'cursor-not-allowed opacity-80' : 'cursor-grab active:cursor-grabbing'}`}
                       style={{
                         left: `${startPct}%`,
-                        width: `${Math.max(4, widthPct)}%`,
+                        width: `${Math.max(3.5, widthPct)}%`,
+                        touchAction: 'none',
                       }}
                     >
-                      {/* Left Trim Handle */}
+                      {/* Left Trim Handle - Drag to stretch/shrink from start */}
                       {!isLocked && (
                         <div
-                          onMouseDown={e => handleAudioClipMouseDown(e, track, 'trim-start')}
-                          className="w-1.5 h-full absolute left-0 top-0 cursor-ew-resize hover:bg-white/30 z-10"
-                          title="Trim Start"
-                        />
+                          onPointerDown={e => handleAudioClipPointerDown(e, track, 'trim-start')}
+                          className="w-3.5 sm:w-3 h-full absolute left-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 active:bg-white/60 text-white/80 touch-none z-30"
+                          style={{ touchAction: 'none' }}
+                          title="Drag to trim / stretch start time"
+                        >
+                          <div className="w-0.5 h-3 bg-white/80 rounded-full" />
+                        </div>
                       )}
 
-                      <div className="flex items-center space-x-2 truncate">
+                      <div className="flex items-center space-x-2 truncate px-2.5">
                         <Music className="w-3 h-3 text-lime-200 shrink-0" />
                         
                         {/* Realistic Waveform SVG Visualizer scaling with zoom (Screenshot 5) */}
@@ -1399,13 +1610,23 @@ export const Timeline: React.FC<TimelineProps> = ({
                         <span className="truncate text-[11px] font-medium text-lime-100">{track.name}</span>
                       </div>
 
-                      {/* Right Trim Handle */}
+                      {/* Right Trim Handle - Drag to stretch/shrink from end */}
                       {!isLocked && (
                         <div
-                          onMouseDown={e => handleAudioClipMouseDown(e, track, 'trim-end')}
-                          className="w-1.5 h-full absolute right-0 top-0 cursor-ew-resize hover:bg-white/30 z-10"
-                          title="Trim End"
-                        />
+                          onPointerDown={e => handleAudioClipPointerDown(e, track, 'trim-end')}
+                          className="w-3.5 sm:w-3 h-full absolute right-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 active:bg-white/60 text-white/80 touch-none z-30"
+                          style={{ touchAction: 'none' }}
+                          title="Drag to trim / stretch duration"
+                        >
+                          <div className="w-0.5 h-3 bg-white/80 rounded-full" />
+                        </div>
+                      )}
+
+                      {/* Real-time dragging/trimming feedback badge */}
+                      {draggingFeedback?.id === track.id && (
+                        <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-slate-950 text-lime-300 text-[10px] font-mono px-2 py-0.5 rounded shadow-xl border border-lime-500/60 whitespace-nowrap z-50 pointer-events-none">
+                          {draggingFeedback.startTime.toFixed(1)}s - {(draggingFeedback.startTime + draggingFeedback.duration).toFixed(1)}s ({draggingFeedback.duration.toFixed(1)}s)
+                        </div>
                       )}
                     </div>
 

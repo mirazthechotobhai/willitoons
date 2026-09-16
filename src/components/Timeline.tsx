@@ -96,6 +96,7 @@ interface TimelineProps {
   onSelectScene: (index: number) => void;
   onAddScene: () => void;
   onDeleteScene: (index: number) => void;
+  onUpdateScene?: (index: number, updates: Partial<Scene>) => void;
   currentTime: number;
   onSeek: (time: number) => void;
   selectedElementId: string | null;
@@ -129,6 +130,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   onSelectScene,
   onAddScene,
   onDeleteScene,
+  onUpdateScene,
   currentTime,
   onSeek,
   selectedElementId,
@@ -155,18 +157,24 @@ export const Timeline: React.FC<TimelineProps> = ({
   onInteractionStart,
   onInteractionEnd,
 }) => {
-  const currentScene = scenes[activeSceneIndex] || scenes[0];
-  const sceneDuration = currentScene?.duration || 12;
+  // Maximum duration limit per scene is 2 minutes (120 seconds)
+  const MAX_SCENE_DURATION = 120;
 
-  // Calculate maximum end time across all visual elements and audio tracks
-  const maxLayerEndTime = Math.max(
-    sceneDuration,
-    ...(currentScene?.elements || []).map(el => (el.startTime || 0) + (el.duration || 0)),
-    ...(currentScene?.audioTracks || []).map(at => (at.startTime || 0) + (at.duration || 0))
+  const currentScene = scenes[activeSceneIndex] || scenes[0];
+  const sceneDuration = Math.min(MAX_SCENE_DURATION, currentScene?.duration || 10);
+
+  // Calculate maximum end time across all visual elements and audio tracks, capped at 120s
+  const maxLayerEndTime = Math.min(
+    MAX_SCENE_DURATION,
+    Math.max(
+      sceneDuration,
+      ...(currentScene?.elements || []).map(el => (el.startTime || 0) + (el.duration || 0)),
+      ...(currentScene?.audioTracks || []).map(at => (at.startTime || 0) + (at.duration || 0))
+    )
   );
 
-  // Effective duration expands so user can pan all the way to the end of the longest layer
-  const duration = Math.max(sceneDuration, Math.ceil(maxLayerEndTime));
+  // Effective duration capped at 120s (2 minutes). If more time is needed, user adds a new scene.
+  const duration = Math.min(MAX_SCENE_DURATION, Math.max(sceneDuration, Math.ceil(maxLayerEndTime)));
 
   const [internalTimelineZoom, setInternalTimelineZoom] = useState<number>(1);
   const timelineZoom = externalTimelineZoom ?? internalTimelineZoom;
@@ -200,11 +208,28 @@ export const Timeline: React.FC<TimelineProps> = ({
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Dynamic tick generator for Timeline Zoom
+  // Dynamic tick generator for Timeline Zoom (ranging down to 1% / 0.01)
   const getTimelineTicks = () => {
     let subStep = 1;
     let majorStep = 1;
-    if (timelineZoom <= 0.6) {
+    if (timelineZoom <= 0.02) {
+      // 1% - 2% zoom: show minute marks
+      majorStep = 60; // every 1 min (00:00, 01:00, 02:00)
+      subStep = 30;   // every 30 sec
+    } else if (timelineZoom <= 0.04) {
+      // 3% - 4% zoom: show 30s marks
+      majorStep = 30;
+      subStep = 15;
+    } else if (timelineZoom <= 0.08) {
+      majorStep = duration > 60 ? 30 : duration > 20 ? 10 : 5;
+      subStep = majorStep / 2;
+    } else if (timelineZoom <= 0.18) {
+      majorStep = duration > 40 ? 15 : 5;
+      subStep = majorStep / 2;
+    } else if (timelineZoom <= 0.35) {
+      majorStep = 5;
+      subStep = 2.5;
+    } else if (timelineZoom <= 0.6) {
       majorStep = 2;
       subStep = 2;
     } else if (timelineZoom >= 3.5) {
@@ -238,13 +263,14 @@ export const Timeline: React.FC<TimelineProps> = ({
   const timelineTicks = getTimelineTicks();
 
   // Dynamic pixel width calculation for timeline content:
-  // Base 75px per second gives comfortable visual spacing for each second marker and clip handles.
-  // Scales with timelineZoom (from 0.5x to 5x).
-  // Includes layer headers width and 240px extra right-side buffer to comfortably navigate past the very end of the longest layer.
+  // Base 75px per second at 1x zoom (100%).
+  // Scales down to 1% (0.01x) and up to 5x.
+  // When zoomed out, tracks shrink neatly to the left without forcing 100% container width,
+  // leaving the right area open and clean as requested by the user.
   const basePixelsPerSec = 75;
   const headerOffsetPx = isLayerHeadersVisible ? 176 : 0;
-  const minTrackWidthPx = Math.round(duration * basePixelsPerSec * timelineZoom);
-  const totalTimelineWidthPx = minTrackWidthPx + headerOffsetPx + 240;
+  const minTrackWidthPx = Math.max(50, Math.round(duration * basePixelsPerSec * timelineZoom));
+  const totalTimelineWidthPx = minTrackWidthPx + headerOffsetPx;
 
   // Close menus on click outside
   useEffect(() => {
@@ -410,8 +436,8 @@ export const Timeline: React.FC<TimelineProps> = ({
       const deltaSec = (moveEvent.clientX - startClientX) / (pxPerSec || 1);
 
       if (mode === 'move') {
-        // Move anywhere left/right without restriction
-        const newStart = Math.max(0, initialStart + deltaSec);
+        const maxStart = Math.max(0, MAX_SCENE_DURATION - initialDuration);
+        const newStart = Math.max(0, Math.min(maxStart, initialStart + deltaSec));
         const roundedStart = roundTime(newStart);
         onUpdateElement(el.id, { startTime: roundedStart });
         setDraggingFeedback({
@@ -421,8 +447,9 @@ export const Timeline: React.FC<TimelineProps> = ({
           duration: initialDuration,
         });
       } else if (mode === 'trim-end') {
-        // Stretch or shrink from the right edge
-        const newDur = Math.max(0.2, initialDuration + deltaSec);
+        // Stretch or shrink from the right edge, capped at MAX_SCENE_DURATION (120s / 2m)
+        const maxDur = Math.max(0.2, MAX_SCENE_DURATION - initialStart);
+        const newDur = Math.max(0.2, Math.min(maxDur, initialDuration + deltaSec));
         const roundedDur = roundTime(newDur);
         onUpdateElement(el.id, { duration: roundedDur });
         setDraggingFeedback({
@@ -514,8 +541,8 @@ export const Timeline: React.FC<TimelineProps> = ({
       const deltaSec = (moveEvent.clientX - startClientX) / (pxPerSec || 1);
 
       if (mode === 'move') {
-        // Move anywhere left/right without restriction
-        const newStart = Math.max(0, initialStart + deltaSec);
+        const maxStart = Math.max(0, MAX_SCENE_DURATION - initialDuration);
+        const newStart = Math.max(0, Math.min(maxStart, initialStart + deltaSec));
         const roundedStart = roundTime(newStart);
         onUpdateAudioTrack(track.id, { startTime: roundedStart });
         setDraggingFeedback({
@@ -525,8 +552,9 @@ export const Timeline: React.FC<TimelineProps> = ({
           duration: initialDuration,
         });
       } else if (mode === 'trim-end') {
-        // Stretch or shrink from the right edge
-        const newDur = Math.max(0.2, initialDuration + deltaSec);
+        // Stretch or shrink from the right edge, capped at MAX_SCENE_DURATION (120s / 2m)
+        const maxDur = Math.max(0.2, MAX_SCENE_DURATION - initialStart);
+        const newDur = Math.max(0.2, Math.min(maxDur, initialDuration + deltaSec));
         const roundedDur = roundTime(newDur);
         onUpdateAudioTrack(track.id, { duration: roundedDur });
         setDraggingFeedback({
@@ -879,11 +907,49 @@ export const Timeline: React.FC<TimelineProps> = ({
           {/* + New Scene Button */}
           <button
             onClick={onAddScene}
-            title="Add New Scene"
+            title="Add New Scene (Max 2m per scene)"
             className="flex items-center justify-center p-1.5 bg-[#1c222e] hover:bg-[#252c3b] text-slate-300 rounded border border-[#2e3748] transition-colors cursor-pointer active:scale-95"
           >
             <Plus className="w-3.5 h-3.5 text-blue-400" />
           </button>
+
+          {/* Active Scene Duration (Max 120s / 2m per scene) */}
+          <div className="hidden sm:flex items-center space-x-1 px-2 py-0.5 bg-[#121622] rounded border border-[#2e3748] text-xs text-slate-300 select-none">
+            <span className="text-[11px] text-slate-400 font-medium">Duration:</span>
+            <button
+              onClick={() => onUpdateScene?.(activeSceneIndex, { duration: Math.max(1, currentScene.duration - 5) })}
+              className="px-1 py-0.5 hover:bg-[#222a3a] rounded text-slate-300 hover:text-white cursor-pointer"
+              title="Decrease Scene Duration -5s"
+            >
+              -5s
+            </button>
+            <input
+              type="number"
+              min={1}
+              max={120}
+              value={currentScene.duration}
+              onChange={e => {
+                const val = parseInt(e.target.value);
+                if (!isNaN(val)) {
+                  onUpdateScene?.(activeSceneIndex, { duration: Math.max(1, Math.min(120, val)) });
+                }
+              }}
+              className="w-10 bg-[#0d1017] border border-slate-700 text-center font-mono font-bold text-amber-300 rounded px-1 py-0.5 text-xs outline-none focus:border-amber-400"
+              title="Current scene duration in seconds (Max 120s / 2m)"
+            />
+            <span className="font-mono text-xs text-slate-400">s</span>
+            <button
+              onClick={() => onUpdateScene?.(activeSceneIndex, { duration: Math.min(120, currentScene.duration + 5) })}
+              disabled={currentScene.duration >= 120}
+              className="px-1 py-0.5 hover:bg-[#222a3a] rounded text-slate-300 hover:text-white disabled:opacity-30 cursor-pointer"
+              title="Increase Scene Duration +5s (Max 120s / 2m)"
+            >
+              +5s
+            </button>
+            <span className="text-[10px] text-amber-400/80 font-mono pl-1 border-l border-slate-700" title="Max 2 minutes per scene. Add a new scene for more.">
+              max 2m
+            </span>
+          </div>
 
           <button
             onClick={() => onSelectScene(Math.min(scenes.length - 1, activeSceneIndex + 1))}
@@ -1043,9 +1109,19 @@ export const Timeline: React.FC<TimelineProps> = ({
             {/* Timeline Zoom: - and + with 100% display right next to Jump to End */}
             <div className="flex items-center space-x-0.5 sm:space-x-1 px-1 sm:px-1.5 py-0.5 bg-[#10141c] rounded border border-[#242b3a]">
               <button
-                onClick={() => setTimelineZoom(Math.max(0.5, Math.round((timelineZoom - 0.25) * 100) / 100))}
+                onClick={() => {
+                  let nextZoom: number;
+                  if (timelineZoom > 0.25) {
+                    nextZoom = Math.max(0.25, Math.round((timelineZoom - 0.25) * 100) / 100);
+                  } else if (timelineZoom > 0.05) {
+                    nextZoom = Math.max(0.05, Math.round((timelineZoom - 0.05) * 100) / 100);
+                  } else {
+                    nextZoom = Math.max(0.01, Math.round((timelineZoom - 0.01) * 100) / 100);
+                  }
+                  setTimelineZoom(nextZoom);
+                }}
                 className="p-0.5 sm:p-1 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
-                title="Zoom Out (-)"
+                title="Zoom Out (-) - Down to 1%"
               >
                 <ZoomOut className="w-3.5 h-3.5" />
               </button>
@@ -1053,9 +1129,9 @@ export const Timeline: React.FC<TimelineProps> = ({
               {/* Slider (Visible on md desktop screens) */}
               <input
                 type="range"
-                min="0.5"
+                min="0.01"
                 max="5"
-                step="0.25"
+                step="0.01"
                 value={timelineZoom}
                 onChange={e => setTimelineZoom(parseFloat(e.target.value))}
                 className="hidden md:inline-block w-12 lg:w-16 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
@@ -1063,7 +1139,17 @@ export const Timeline: React.FC<TimelineProps> = ({
               />
 
               <button
-                onClick={() => setTimelineZoom(Math.min(5, Math.round((timelineZoom + 0.25) * 100) / 100))}
+                onClick={() => {
+                  let nextZoom: number;
+                  if (timelineZoom < 0.05) {
+                    nextZoom = Math.min(0.05, Math.round((timelineZoom + 0.01) * 100) / 100);
+                  } else if (timelineZoom < 0.25) {
+                    nextZoom = Math.min(0.25, Math.round((timelineZoom + 0.05) * 100) / 100);
+                  } else {
+                    nextZoom = Math.min(5, Math.round((timelineZoom + 0.25) * 100) / 100);
+                  }
+                  setTimelineZoom(nextZoom);
+                }}
                 className="p-0.5 sm:p-1 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
                 title="Zoom In (+)"
               >
@@ -1108,8 +1194,8 @@ export const Timeline: React.FC<TimelineProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  if (selectedElement) onUpdateElement(selectedElement.id, { startTime: Math.round((selectedElement.startTime + 0.5) * 10) / 10 });
-                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { startTime: Math.round((selectedAudio.startTime + 0.5) * 10) / 10 });
+                  if (selectedElement) onUpdateElement(selectedElement.id, { startTime: Math.min(MAX_SCENE_DURATION - selectedElement.duration, Math.round((selectedElement.startTime + 0.5) * 10) / 10) });
+                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { startTime: Math.min(MAX_SCENE_DURATION - selectedAudio.duration, Math.round((selectedAudio.startTime + 0.5) * 10) / 10) });
                 }}
                 className="px-1 py-0.5 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer font-mono"
                 title="Nudge Right 0.5s"
@@ -1132,11 +1218,11 @@ export const Timeline: React.FC<TimelineProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  if (selectedElement) onUpdateElement(selectedElement.id, { duration: Math.round((selectedElement.duration + 0.5) * 10) / 10 });
-                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { duration: Math.round((selectedAudio.duration + 0.5) * 10) / 10 });
+                  if (selectedElement) onUpdateElement(selectedElement.id, { duration: Math.min(MAX_SCENE_DURATION - selectedElement.startTime, Math.round((selectedElement.duration + 0.5) * 10) / 10) });
+                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { duration: Math.min(MAX_SCENE_DURATION - selectedAudio.startTime, Math.round((selectedAudio.duration + 0.5) * 10) / 10) });
                 }}
                 className="px-1 py-0.5 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer font-mono"
-                title="Lengthen Duration +0.5s"
+                title="Lengthen Duration +0.5s (Max 120s / 2m)"
               >
                 +0.5s
               </button>
@@ -1186,10 +1272,10 @@ export const Timeline: React.FC<TimelineProps> = ({
         >
           <div
             style={{
-              minWidth: `max(100%, ${totalTimelineWidthPx}px)`,
-              width: `max(100%, ${totalTimelineWidthPx}px)`,
+              width: `${totalTimelineWidthPx}px`,
+              minWidth: `${totalTimelineWidthPx}px`,
             }}
-            className="flex flex-col min-h-full relative"
+            className="flex flex-col min-h-full relative shrink-0"
           >
             {/* Hand Tool Pan Overlay: When active, clicking and dragging anywhere on the timeline surface pans smoothly without triggering clip edits */}
             {isTimelinePanMode && (

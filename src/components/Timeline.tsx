@@ -119,6 +119,8 @@ interface TimelineProps {
   onRedo?: () => void;
   canUndo?: boolean;
   canRedo?: boolean;
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
 }
 
 export const Timeline: React.FC<TimelineProps> = ({
@@ -150,6 +152,8 @@ export const Timeline: React.FC<TimelineProps> = ({
   onRedo,
   canUndo = true,
   canRedo = true,
+  onInteractionStart,
+  onInteractionEnd,
 }) => {
   const currentScene = scenes[activeSceneIndex] || scenes[0];
   const sceneDuration = currentScene?.duration || 12;
@@ -361,6 +365,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
     const precision = timelineZoom >= 3.5 ? 100 : timelineZoom >= 2 ? 20 : 10;
     const roundTime = (val: number) => Math.round(val * precision) / precision;
+    onInteractionStart?.();
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const deltaSec = ((moveEvent.clientX - startClientX) / rect.width) * duration;
@@ -384,6 +389,7 @@ export const Timeline: React.FC<TimelineProps> = ({
     const onMouseUp = () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      onInteractionEnd?.();
     };
 
     window.addEventListener('mousemove', onMouseMove);
@@ -407,6 +413,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
     const precision = timelineZoom >= 3.5 ? 100 : timelineZoom >= 2 ? 20 : 10;
     const roundTime = (val: number) => Math.round(val * precision) / precision;
+    onInteractionStart?.();
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const deltaSec = ((moveEvent.clientX - startClientX) / rect.width) * duration;
@@ -430,6 +437,7 @@ export const Timeline: React.FC<TimelineProps> = ({
     const onMouseUp = () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      onInteractionEnd?.();
     };
 
     window.addEventListener('mousemove', onMouseMove);

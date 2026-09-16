@@ -56,6 +56,8 @@ interface CanvasStageProps {
   onRedo?: () => void;
   canUndo?: boolean;
   canRedo?: boolean;
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
 }
 
 export const CanvasStage: React.FC<CanvasStageProps> = ({
@@ -80,6 +82,8 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   onRedo,
   canUndo = true,
   canRedo = true,
+  onInteractionStart,
+  onInteractionEnd,
 }) => {
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const stageViewportRef = useRef<HTMLDivElement | null>(null);
@@ -181,6 +185,40 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     }
   };
 
+  // Viewport Touch Down for Panning on mobile when Hand tool is active
+  const handleViewportTouchStart = (e: React.TouchEvent) => {
+    if (isPanActive && e.touches.length === 1) {
+      const touch = e.touches[0];
+      const startClientX = touch.clientX;
+      const startClientY = touch.clientY;
+      const startPanX = panOffset.x;
+      const startPanY = panOffset.y;
+      setIsPanning(true);
+
+      const onTouchMove = (moveEvent: TouchEvent) => {
+        if (moveEvent.touches.length === 1) {
+          if (moveEvent.cancelable) moveEvent.preventDefault();
+          const moveTouch = moveEvent.touches[0];
+          setPanOffset({
+            x: Math.round(startPanX + (moveTouch.clientX - startClientX)),
+            y: Math.round(startPanY + (moveTouch.clientY - startClientY)),
+          });
+        }
+      };
+
+      const onTouchEnd = () => {
+        setIsPanning(false);
+        window.removeEventListener('touchmove', onTouchMove);
+        window.removeEventListener('touchend', onTouchEnd);
+        window.removeEventListener('touchcancel', onTouchEnd);
+      };
+
+      window.addEventListener('touchmove', onTouchMove, { passive: false });
+      window.addEventListener('touchend', onTouchEnd);
+      window.addEventListener('touchcancel', onTouchEnd);
+    }
+  };
+
   // Drag & Drop onto Stage
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -211,7 +249,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     }
   };
 
-  // Dragging selected element on stage
+  // Dragging selected element on stage via mouse
   const handleElementMouseDown = (e: React.MouseEvent, element: StageElement) => {
     if (isPanActive) return; // In pan mode, don't drag elements
     e.stopPropagation();
@@ -226,6 +264,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     if (!stageRect) return;
 
     setIsDraggingElement(true);
+    onInteractionStart?.();
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const deltaX = ((moveEvent.clientX - startClientX) / stageRect.width) * 100;
@@ -242,13 +281,61 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       setIsDraggingElement(false);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      onInteractionEnd?.();
     };
 
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
   };
 
-  // Transform Bounding Box Handle Drag (Resize - Unlimited Scale & Zoom)
+  // Dragging selected element on stage via mobile touch gestures
+  const handleElementTouchStart = (e: React.TouchEvent, element: StageElement) => {
+    if (isPanActive) return; // In pan mode, let viewport touch pan handle it
+    e.stopPropagation();
+    onSelectElement(element.id);
+    if (element.locked) return;
+    if (e.touches.length !== 1) return;
+
+    const touch = e.touches[0];
+    const startClientX = touch.clientX;
+    const startClientY = touch.clientY;
+    const startX = element.x;
+    const startY = element.y;
+    const stageRect = stageContainerRef.current?.getBoundingClientRect();
+    if (!stageRect) return;
+
+    setIsDraggingElement(true);
+    onInteractionStart?.();
+
+    const onTouchMove = (moveEvent: TouchEvent) => {
+      if (moveEvent.touches.length === 1) {
+        if (moveEvent.cancelable) moveEvent.preventDefault();
+        const moveTouch = moveEvent.touches[0];
+        const deltaX = ((moveTouch.clientX - startClientX) / stageRect.width) * 100;
+        const deltaY = ((moveTouch.clientY - startClientY) / stageRect.height) * 100;
+
+        // Move anywhere across the stage effortlessly with finger
+        onUpdateElement(element.id, {
+          x: Math.round(Math.max(-300, Math.min(400, startX + deltaX))),
+          y: Math.round(Math.max(-300, Math.min(400, startY + deltaY))),
+        });
+      }
+    };
+
+    const onTouchEnd = () => {
+      setIsDraggingElement(false);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchEnd);
+      onInteractionEnd?.();
+    };
+
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onTouchEnd);
+    window.addEventListener('touchcancel', onTouchEnd);
+  };
+
+  // Transform Bounding Box Handle Drag via mouse (Resize - Unlimited Scale & Zoom)
   const handleResizeHandleDown = (
     e: React.MouseEvent,
     element: StageElement,
@@ -266,6 +353,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     const elemCenterX = stageRect.left + (element.x / 100) * stageRect.width;
     const elemCenterY = stageRect.top + (element.y / 100) * stageRect.height;
     const startDistFromCenter = Math.hypot(startClientX - elemCenterX, startClientY - elemCenterY);
+    onInteractionStart?.();
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       if (handle === 'rotate') {
@@ -307,10 +395,86 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     const onMouseUp = () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      onInteractionEnd?.();
     };
 
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
+  };
+
+  // Transform Bounding Box Handle Drag via touch on mobile devices
+  const handleResizeHandleTouchStart = (
+    e: React.TouchEvent,
+    element: StageElement,
+    handle: 'se' | 'sw' | 'ne' | 'nw' | 'n' | 's' | 'e' | 'w' | 'rotate'
+  ) => {
+    e.stopPropagation();
+    if (element.locked) return;
+    if (e.touches.length !== 1) return;
+
+    const touch = e.touches[0];
+    const startClientX = touch.clientX;
+    const startClientY = touch.clientY;
+    const startW = element.width;
+    const startH = element.height;
+    const stageRect = stageContainerRef.current?.getBoundingClientRect();
+    if (!stageRect) return;
+
+    const elemCenterX = stageRect.left + (element.x / 100) * stageRect.width;
+    const elemCenterY = stageRect.top + (element.y / 100) * stageRect.height;
+    const startDistFromCenter = Math.hypot(startClientX - elemCenterX, startClientY - elemCenterY);
+    onInteractionStart?.();
+
+    const onTouchMove = (moveEvent: TouchEvent) => {
+      if (moveEvent.touches.length === 1) {
+        if (moveEvent.cancelable) moveEvent.preventDefault();
+        const moveTouch = moveEvent.touches[0];
+
+        if (handle === 'rotate') {
+          const angleRad = Math.atan2(moveTouch.clientY - elemCenterY, moveTouch.clientX - elemCenterX);
+          const deg = Math.round((angleRad * 180) / Math.PI + 90);
+          onUpdateElement(element.id, { rotation: deg });
+          return;
+        }
+
+        if (handle === 'se' || handle === 'sw' || handle === 'ne' || handle === 'nw') {
+          const currDistFromCenter = Math.hypot(moveTouch.clientX - elemCenterX, moveTouch.clientY - elemCenterY);
+          const factor = Math.max(0.01, currDistFromCenter / (startDistFromCenter || 1));
+          const newW = Math.max(2, Math.round(startW * factor));
+          const newH = Math.max(2, Math.round(startH * factor));
+          onUpdateElement(element.id, {
+            width: newW,
+            height: newH,
+          });
+          return;
+        }
+
+        if (handle === 'e' || handle === 'w') {
+          const distRatioX = Math.abs(moveTouch.clientX - elemCenterX) / (stageRect.width / 2);
+          const newW = Math.max(2, Math.round(startW * Math.max(0.05, distRatioX)));
+          onUpdateElement(element.id, { width: newW });
+          return;
+        }
+
+        if (handle === 'n' || handle === 's') {
+          const distRatioY = Math.abs(moveTouch.clientY - elemCenterY) / (stageRect.height / 2);
+          const newH = Math.max(2, Math.round(startH * Math.max(0.05, distRatioY)));
+          onUpdateElement(element.id, { height: newH });
+          return;
+        }
+      }
+    };
+
+    const onTouchEnd = () => {
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchEnd);
+      onInteractionEnd?.();
+    };
+
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onTouchEnd);
+    window.addEventListener('touchcancel', onTouchEnd);
   };
 
   // Mouse wheel zoom on canvas with Ctrl/Cmd or normal wheel with Alt / in pan mode
@@ -375,6 +539,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
         ref={stageViewportRef}
         onWheel={handleViewportWheel}
         onMouseDown={handleViewportMouseDown}
+        onTouchStart={handleViewportTouchStart}
         className={`flex-1 relative flex items-center justify-center p-4 overflow-hidden bg-[#E2E8F0] canvas-grid-dots select-none ${
           isPanActive ? (isPanning ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default'
         }`}
@@ -465,8 +630,12 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                       if (isBg) return;
                       handleElementMouseDown(e, el);
                     }}
+                    onTouchStart={e => {
+                      if (isBg) return;
+                      handleElementTouchStart(e, el);
+                    }}
                     className={`absolute transition-shadow select-none ${
-                      isBg ? 'pointer-events-none' : el.locked ? 'cursor-default' : 'cursor-move'
+                      isBg ? 'pointer-events-none' : el.locked ? 'cursor-default' : 'cursor-move touch-none'
                     } ${
                       !isBg && isSelected ? 'ring-2 ring-blue-500 z-50' : !isBg ? 'hover:ring-1 hover:ring-blue-400/50' : ''
                     }`}
@@ -536,7 +705,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
 
                     {/* SPEECH BUBBLE ELEMENT */}
                     {el.type === 'speechBubble' && (
-                      <div className="relative w-full h-full flex items-center justify-center p-2.5 filter drop-shadow-md">
+                      <div className="relative w-full h-full flex items-center justify-center p-2.5 filter drop-shadow-md pointer-events-none">
                         <div
                           className="w-full h-full rounded-2xl flex items-center justify-center text-center p-2 font-bold leading-snug border-2 border-slate-900 shadow-md transition-all"
                           style={{
@@ -561,7 +730,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                     {/* TEXT ELEMENT */}
                     {el.type === 'text' && (
                       <div
-                        className="w-full h-full flex items-center justify-center font-extrabold tracking-wide drop-shadow-md p-1"
+                        className="w-full h-full flex items-center justify-center font-extrabold tracking-wide drop-shadow-md p-1 pointer-events-none"
                         style={{
                           color: el.textColor || '#ffffff',
                           fontSize: `${el.fontSize || 22}px`,
@@ -585,61 +754,71 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                             {/* Top Rotation Handle */}
                             <div
                               onMouseDown={e => handleResizeHandleDown(e, el, 'rotate')}
-                              className="absolute -top-7 left-1/2 -translate-x-1/2 w-4 h-4 bg-blue-600 rounded-full border-2 border-white shadow-md cursor-grab active:cursor-grabbing flex items-center justify-center hover:scale-125 transition-transform z-50"
+                              onTouchStart={e => handleResizeHandleTouchStart(e, el, 'rotate')}
+                              className="absolute -top-7 left-1/2 -translate-x-1/2 w-5 h-5 sm:w-4 sm:h-4 bg-blue-600 rounded-full border-2 border-white shadow-md cursor-grab active:cursor-grabbing flex items-center justify-center hover:scale-125 transition-transform z-50 touch-none"
                               title="Rotate Element"
                             >
-                              <div className="w-1.5 h-1.5 bg-white rounded-full" />
+                              <div className="w-1.5 h-1.5 bg-white rounded-full pointer-events-none" />
                             </div>
                             <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-0.5 h-4 bg-blue-500 pointer-events-none" />
 
-                            {/* 4 Corner Resize Handles (Unlimited Proportional Scaling) */}
+                            {/* 4 Corner Resize Handles (Unlimited Proportional Scaling with Touch Support) */}
                             <div
                               onMouseDown={e => handleResizeHandleDown(e, el, 'nw')}
-                              className="absolute -top-2 -left-2 w-4 h-4 bg-white border-2 border-blue-600 rounded-xs shadow-md cursor-nwse-resize hover:scale-125 transition-transform z-50"
+                              onTouchStart={e => handleResizeHandleTouchStart(e, el, 'nw')}
+                              className="absolute -top-2.5 -left-2.5 sm:-top-2 sm:-left-2 w-5 h-5 sm:w-4 sm:h-4 bg-white border-2 border-blue-600 rounded-xs shadow-md cursor-nwse-resize hover:scale-125 transition-transform z-50 touch-none"
                               title="Resize Corner (Unlimited Size)"
                             />
                             <div
                               onMouseDown={e => handleResizeHandleDown(e, el, 'ne')}
-                              className="absolute -top-2 -right-2 w-4 h-4 bg-white border-2 border-blue-600 rounded-xs shadow-md cursor-nesw-resize hover:scale-125 transition-transform z-50"
+                              onTouchStart={e => handleResizeHandleTouchStart(e, el, 'ne')}
+                              className="absolute -top-2.5 -right-2.5 sm:-top-2 sm:-right-2 w-5 h-5 sm:w-4 sm:h-4 bg-white border-2 border-blue-600 rounded-xs shadow-md cursor-nesw-resize hover:scale-125 transition-transform z-50 touch-none"
                               title="Resize Corner (Unlimited Size)"
                             />
                             <div
                               onMouseDown={e => handleResizeHandleDown(e, el, 'sw')}
-                              className="absolute -bottom-2 -left-2 w-4 h-4 bg-white border-2 border-blue-600 rounded-xs shadow-md cursor-nesw-resize hover:scale-125 transition-transform z-50"
+                              onTouchStart={e => handleResizeHandleTouchStart(e, el, 'sw')}
+                              className="absolute -bottom-2.5 -left-2.5 sm:-bottom-2 sm:-left-2 w-5 h-5 sm:w-4 sm:h-4 bg-white border-2 border-blue-600 rounded-xs shadow-md cursor-nesw-resize hover:scale-125 transition-transform z-50 touch-none"
                               title="Resize Corner (Unlimited Size)"
                             />
                             <div
                               onMouseDown={e => handleResizeHandleDown(e, el, 'se')}
-                              className="absolute -bottom-2 -right-2 w-4 h-4 bg-white border-2 border-blue-600 rounded-xs shadow-md cursor-nwse-resize hover:scale-125 transition-transform z-50"
+                              onTouchStart={e => handleResizeHandleTouchStart(e, el, 'se')}
+                              className="absolute -bottom-2.5 -right-2.5 sm:-bottom-2 sm:-right-2 w-5 h-5 sm:w-4 sm:h-4 bg-white border-2 border-blue-600 rounded-xs shadow-md cursor-nwse-resize hover:scale-125 transition-transform z-50 touch-none"
                               title="Resize Corner (Unlimited Size)"
                             />
 
                             {/* 4 Edge Resize Handles */}
                             <div
                               onMouseDown={e => handleResizeHandleDown(e, el, 'n')}
-                              className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-4 h-2 bg-white border-2 border-blue-600 rounded-xs shadow-xs cursor-ns-resize hover:scale-125 transition-transform z-50"
+                              onTouchStart={e => handleResizeHandleTouchStart(e, el, 'n')}
+                              className="absolute -top-2 left-1/2 -translate-x-1/2 w-6 h-3 sm:w-4 sm:h-2 bg-white border-2 border-blue-600 rounded-xs shadow-xs cursor-ns-resize hover:scale-125 transition-transform z-50 touch-none"
                               title="Stretch Height"
                             />
                             <div
                               onMouseDown={e => handleResizeHandleDown(e, el, 's')}
-                              className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-4 h-2 bg-white border-2 border-blue-600 rounded-xs shadow-xs cursor-ns-resize hover:scale-125 transition-transform z-50"
+                              onTouchStart={e => handleResizeHandleTouchStart(e, el, 's')}
+                              className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-6 h-3 sm:w-4 sm:h-2 bg-white border-2 border-blue-600 rounded-xs shadow-xs cursor-ns-resize hover:scale-125 transition-transform z-50 touch-none"
                               title="Stretch Height"
                             />
                             <div
                               onMouseDown={e => handleResizeHandleDown(e, el, 'w')}
-                              className="absolute top-1/2 -translate-y-1/2 -left-1.5 w-2 h-4 bg-white border-2 border-blue-600 rounded-xs shadow-xs cursor-ew-resize hover:scale-125 transition-transform z-50"
+                              onTouchStart={e => handleResizeHandleTouchStart(e, el, 'w')}
+                              className="absolute top-1/2 -translate-y-1/2 -left-2 w-3 h-6 sm:w-2 sm:h-4 bg-white border-2 border-blue-600 rounded-xs shadow-xs cursor-ew-resize hover:scale-125 transition-transform z-50 touch-none"
                               title="Stretch Width"
                             />
                             <div
                               onMouseDown={e => handleResizeHandleDown(e, el, 'e')}
-                              className="absolute top-1/2 -translate-y-1/2 -right-1.5 w-2 h-4 bg-white border-2 border-blue-600 rounded-xs shadow-xs cursor-ew-resize hover:scale-125 transition-transform z-50"
+                              onTouchStart={e => handleResizeHandleTouchStart(e, el, 'e')}
+                              className="absolute top-1/2 -translate-y-1/2 -right-2 w-3 h-6 sm:w-2 sm:h-4 bg-white border-2 border-blue-600 rounded-xs shadow-xs cursor-ew-resize hover:scale-125 transition-transform z-50 touch-none"
                               title="Stretch Width"
                             />
 
                             {/* Floating Quick Size / Zoom Control Pill Directly on Element */}
                             <div
                               onMouseDown={e => e.stopPropagation()}
-                              className="absolute -bottom-10 left-1/2 -translate-x-1/2 bg-slate-900/90 backdrop-blur-xs text-white px-2.5 py-1 rounded-full shadow-xl border border-slate-700/80 flex items-center space-x-1.5 pointer-events-auto z-50 whitespace-nowrap text-xs select-none"
+                              onTouchStart={e => e.stopPropagation()}
+                              className="absolute -bottom-10 left-1/2 -translate-x-1/2 bg-slate-900/90 backdrop-blur-xs text-white px-2.5 py-1 rounded-full shadow-xl border border-slate-700/80 flex items-center space-x-1.5 pointer-events-auto z-50 whitespace-nowrap text-xs select-none touch-none"
                             >
                               <button
                                 onClick={() => {

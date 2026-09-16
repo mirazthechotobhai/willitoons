@@ -33,41 +33,131 @@ export default function App() {
   const [scenes, setScenes] = useState<Scene[]>(INITIAL_SCENES);
   const [activeSceneIndex, setActiveSceneIndex] = useState(0);
 
-  // Undo / Redo History Tracking
+  // Undo / Redo History Tracking (Up to 80 granular checkpoints)
+  const MAX_HISTORY = 80;
   const [history, setHistory] = useState<Scene[][]>([INITIAL_SCENES]);
   const [historyIndex, setHistoryIndex] = useState<number>(0);
-  const isUndoRedoActionRef = useRef<boolean>(false);
 
+  // Synchronized refs to avoid stale closures during high-frequency interaction events
+  const historyRef = useRef<Scene[][]>([INITIAL_SCENES]);
+  const historyIndexRef = useRef<number>(0);
+  const scenesRef = useRef<Scene[]>(INITIAL_SCENES);
+  const isUndoRedoActionRef = useRef<boolean>(false);
+  const isInteractingRef = useRef<boolean>(false);
+  const interactionStartScenesRef = useRef<Scene[] | null>(null);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Keep scenesRef synchronized with live scenes state
+  scenesRef.current = scenes;
+
+  // Push a new snapshot to history
+  const pushHistorySnapshot = useCallback((newScenes: Scene[]) => {
+    const currentHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
+    const updated = [...currentHistory, newScenes];
+    let finalHistory = updated;
+    if (finalHistory.length > MAX_HISTORY) {
+      finalHistory = finalHistory.slice(finalHistory.length - MAX_HISTORY);
+    }
+    const newIdx = finalHistory.length - 1;
+    historyRef.current = finalHistory;
+    historyIndexRef.current = newIdx;
+    setHistory(finalHistory);
+    setHistoryIndex(newIdx);
+  }, []);
+
+  // Called when user starts an interactive drag, resize, or trim on canvas or timeline
+  const handleInteractionStart = useCallback(() => {
+    isInteractingRef.current = true;
+    // Deep clone current scenes so it acts as an immutable checkpoint prior to user movement
+    interactionStartScenesRef.current = JSON.parse(JSON.stringify(scenesRef.current));
+  }, []);
+
+  // Called when user finishes the interactive drag, resize, or trim
+  const handleInteractionEnd = useCallback(() => {
+    if (!isInteractingRef.current) return;
+    isInteractingRef.current = false;
+    const startScenes = interactionStartScenesRef.current;
+    interactionStartScenesRef.current = null;
+
+    if (startScenes) {
+      const startStr = JSON.stringify(startScenes);
+      const currentStr = JSON.stringify(scenesRef.current);
+      if (startStr !== currentStr) {
+        if (debounceTimerRef.current) {
+          clearTimeout(debounceTimerRef.current);
+          debounceTimerRef.current = null;
+        }
+        // Ensure the baseline prior to this drag is stored at current pointer
+        historyRef.current[historyIndexRef.current] = startScenes;
+        // Now push the final state after the drag as the new checkpoint
+        pushHistorySnapshot(scenesRef.current);
+      }
+    }
+  }, [pushHistorySnapshot]);
+
+  // Monitor discrete changes to scenes (outside of active dragging/trimming)
   useEffect(() => {
     if (isUndoRedoActionRef.current) {
       isUndoRedoActionRef.current = false;
       return;
     }
-    setHistory(prev => {
-      if (prev[historyIndex] === scenes) return prev;
-      const nextHistory = [...prev.slice(0, historyIndex + 1), scenes].slice(-30);
-      setHistoryIndex(nextHistory.length - 1);
-      return nextHistory;
-    });
-  }, [scenes]);
+    // If user is actively dragging or resizing on canvas/timeline, do NOT push intermediate micro-steps
+    if (isInteractingRef.current) {
+      return;
+    }
+
+    // Debounce discrete changes (e.g. typing dialogue text or slider adjustments)
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      const currentHead = historyRef.current[historyIndexRef.current];
+      if (currentHead && JSON.stringify(currentHead) !== JSON.stringify(scenes)) {
+        pushHistorySnapshot(scenes);
+      }
+    }, 200);
+
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, [scenes, pushHistorySnapshot]);
 
   const handleUndo = useCallback(() => {
-    if (historyIndex > 0) {
-      const prevIdx = historyIndex - 1;
-      isUndoRedoActionRef.current = true;
-      setHistoryIndex(prevIdx);
-      setScenes(history[prevIdx]);
+    // If an action was just performed and debounce is pending, commit it first before undoing it
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+      const currentHead = historyRef.current[historyIndexRef.current];
+      if (currentHead && JSON.stringify(currentHead) !== JSON.stringify(scenesRef.current)) {
+        pushHistorySnapshot(scenesRef.current);
+      }
     }
-  }, [historyIndex, history]);
+    if (historyIndexRef.current > 0) {
+      const prevIdx = historyIndexRef.current - 1;
+      historyIndexRef.current = prevIdx;
+      setHistoryIndex(prevIdx);
+      isUndoRedoActionRef.current = true;
+      const targetScenes = historyRef.current[prevIdx];
+      setScenes(targetScenes);
+    }
+  }, [pushHistorySnapshot]);
 
   const handleRedo = useCallback(() => {
-    if (historyIndex < history.length - 1) {
-      const nextIdx = historyIndex + 1;
-      isUndoRedoActionRef.current = true;
+    if (historyIndexRef.current < historyRef.current.length - 1) {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      const nextIdx = historyIndexRef.current + 1;
+      historyIndexRef.current = nextIdx;
       setHistoryIndex(nextIdx);
-      setScenes(history[nextIdx]);
+      isUndoRedoActionRef.current = true;
+      const targetScenes = historyRef.current[nextIdx];
+      setScenes(targetScenes);
     }
-  }, [historyIndex, history]);
+  }, []);
 
   // Global Keyboard Shortcuts for Undo (Ctrl+Z) and Redo (Ctrl+Y / Ctrl+Shift+Z)
   useEffect(() => {
@@ -638,6 +728,8 @@ export default function App() {
               onRedo={handleRedo}
               canUndo={historyIndex > 0}
               canRedo={historyIndex < history.length - 1}
+              onInteractionStart={handleInteractionStart}
+              onInteractionEnd={handleInteractionEnd}
             />
 
             {/* RIGHT COLUMN: ELEMENT INSPECTOR */}
@@ -689,6 +781,8 @@ export default function App() {
             onRedo={handleRedo}
             canUndo={historyIndex > 0}
             canRedo={historyIndex < history.length - 1}
+            onInteractionStart={handleInteractionStart}
+            onInteractionEnd={handleInteractionEnd}
           />
 
         </div>

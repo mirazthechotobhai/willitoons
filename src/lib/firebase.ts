@@ -4,13 +4,13 @@ import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
 
-// Configure Firestore with auto-detect long polling for reliable connection in web/iframe sandbox environments
+// Configure Firestore with forced long-polling for rock-solid connection in web iframe sandbox environments
 let firestoreInstance;
 try {
   firestoreInstance = initializeFirestore(
     app,
     {
-      experimentalAutoDetectLongPolling: true,
+      experimentalForceLongPolling: true,
     },
     firebaseConfig.firestoreDatabaseId || undefined
   );
@@ -20,20 +20,25 @@ try {
 
 export const db = firestoreInstance;
 
-// Test server connectivity on startup (safe, non-blocking check)
+// Non-blocking, graceful connection check with delay to allow SDK initialization
 async function testFirestoreConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     if (msg.includes('offline') || msg.includes('unavailable') || msg.includes('could not be completed')) {
-      console.info('Firestore operating with local offline cache until backend connects.');
+      console.info('Firestore operating with offline persistence until cloud sync connects.');
     } else {
-      console.warn('Firestore initial connection status:', msg);
+      console.warn('Firestore connectivity status:', msg);
     }
   }
 }
 
-testFirestoreConnection();
+if (typeof window !== 'undefined') {
+  // Run safely in background after page load so it never blocks UI or throws on initial render
+  setTimeout(() => {
+    testFirestoreConnection();
+  }, 2000);
+}
 
 export default app;

@@ -1,13 +1,35 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+
+// User's web app's Firebase configuration
+export const firebaseConfig = {
+  apiKey: "AIzaSyDpaSKlMUb9_7QTokR9y3yyAvjEplQp9zo",
+  authDomain: "willitoons.firebaseapp.com",
+  databaseURL: "https://willitoons-default-rtdb.firebaseio.com",
+  projectId: "willitoons",
+  storageBucket: "willitoons.firebasestorage.app",
+  messagingSenderId: "363850068080",
+  appId: "1:363850068080:web:ef31ef4202f212716544b5",
+  measurementId: "G-YJVJTM16QZ"
+};
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
 
-// Initialize Firestore strictly as prescribed in firebase-skill
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// Initialize Firestore
+export const db = getFirestore(app);
 export const auth = getAuth(app);
+
+// Initialize Firebase Analytics if supported
+if (typeof window !== 'undefined' && firebaseConfig.measurementId) {
+  import('firebase/analytics').then(({ getAnalytics, isSupported }) => {
+    isSupported().then(supported => {
+      if (supported) {
+        getAnalytics(app);
+      }
+    }).catch(() => {});
+  }).catch(() => {});
+}
 
 export enum OperationType {
   CREATE = 'create',

@@ -23,12 +23,12 @@ export const RightSidebarRail: React.FC<RightSidebarRailProps> = ({
   hasSelectedElement,
 }) => {
   const items = [
+    { id: 'inspector' as const, label: 'Properties', icon: Sliders },
     { id: 'assets' as const, label: 'Asset Library', icon: FolderArchive },
     { id: 'effects' as const, label: 'Effects', icon: Wand2 },
     { id: 'music' as const, label: 'Music', icon: Music },
     { id: 'sounds' as const, label: 'Sounds', icon: Volume2 },
     { id: 'tutorials' as const, label: 'Tutorials', icon: Video },
-    ...(hasSelectedElement ? [{ id: 'inspector' as const, label: 'Properties', icon: Sliders }] : []),
   ];
 
   return (
@@ -44,15 +44,22 @@ export const RightSidebarRail: React.FC<RightSidebarRailProps> = ({
               onClick={() => onSelectTab(isActive ? null : item.id)}
               className={`relative flex flex-col items-center justify-center py-2 px-1 w-full rounded-xl transition-all cursor-pointer group ${
                 isActive
-                  ? 'bg-blue-50 text-blue-600 shadow-xs'
-                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
+                  ? 'bg-blue-50 text-blue-600 shadow-xs font-semibold'
+                  : item.id === 'inspector' && hasSelectedElement
+                    ? 'text-blue-700 bg-blue-50/50 hover:bg-blue-100/70 border border-blue-200/60'
+                    : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
               }`}
+              title={item.id === 'inspector' ? 'Open Properties (Transforms, Visemes, Animations)' : item.label}
             >
-              <Icon className={`w-5 h-5 mb-1 ${isActive ? 'text-blue-600' : 'text-slate-500 group-hover:text-slate-900'}`} />
+              <Icon className={`w-5 h-5 mb-1 ${isActive ? 'text-blue-600' : item.id === 'inspector' && hasSelectedElement ? 'text-blue-600' : 'text-slate-500 group-hover:text-slate-900'}`} />
               
-              <span className={`text-[9px] leading-tight text-center truncate max-w-[62px] ${isActive ? 'font-bold text-blue-600' : 'font-medium text-slate-600'}`}>
+              <span className={`text-[9px] leading-tight text-center truncate max-w-[62px] ${isActive ? 'font-bold text-blue-600' : item.id === 'inspector' && hasSelectedElement ? 'font-semibold text-blue-700' : 'font-medium text-slate-600'}`}>
                 {item.label}
               </span>
+
+              {item.id === 'inspector' && hasSelectedElement && !isActive && (
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-blue-500 ring-2 ring-white" />
+              )}
 
               {isActive && (
                 <div className="absolute right-0 top-2 bottom-2 w-1 bg-blue-600 rounded-l-full" />

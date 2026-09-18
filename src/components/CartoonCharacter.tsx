@@ -16,6 +16,7 @@ interface CartoonCharacterProps {
   className?: string;
   selectedJointId?: JointId | null;
   onSelectJoint?: (jointId: JointId) => void;
+  currentTime?: number;
 }
 
 export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
@@ -31,15 +32,16 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
   className = '',
   selectedJointId = null,
   onSelectJoint,
+  currentTime,
 }) => {
   const [frame, setFrame] = useState(0);
   const [draggingJoint, setDraggingJoint] = useState<JointId | null>(null);
   const [hoveredJoint, setHoveredJoint] = useState<JointId | null>(null);
 
-  // Animation cycle timer
+  // Animation cycle timer (used when currentTime is not provided)
   useEffect(() => {
-    // If interactive bones is active, we don't need continuous animation cycle frames
-    if (interactiveBones) return;
+    // If interactive bones is active or currentTime is provided externally, no need for internal timer
+    if (interactiveBones || currentTime !== undefined) return;
 
     let animId: number;
     let lastTime = performance.now();
@@ -54,7 +56,11 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
 
     animId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animId);
-  }, [interactiveBones]);
+  }, [interactiveBones, currentTime]);
+
+  // Deterministic animation frame synchronized with timeline currentTime (16.6 FPS)
+  // This guarantees that split/cut parts across head-to-head boundaries have continuous, smooth poses
+  const animFrame = currentTime !== undefined ? Math.floor(currentTime * 16.66) % 60 : frame;
 
   const { appearance, joints, angle } = model;
   const isAngle34Front = angle === 'threeQuarterFront';
@@ -80,11 +86,11 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
     legRRotate = 0;
     bodyOffsetY = 0;
   } else if (animation === 'idle') {
-    headOffsetY = Math.sin(frame * 0.1) * 1.5;
-    armLRotate = Math.sin(frame * 0.1) * 2;
-    armRRotate = -Math.sin(frame * 0.1) * 2;
+    headOffsetY = Math.sin(animFrame * 0.1) * 1.5;
+    armLRotate = Math.sin(animFrame * 0.1) * 2;
+    armRRotate = -Math.sin(animFrame * 0.1) * 2;
   } else if (animation === 'walk') {
-    const cycle = frame * 0.2;
+    const cycle = animFrame * 0.2;
     legLRotate = Math.sin(cycle) * 20;
     legRRotate = -Math.sin(cycle) * 20;
     armLRotate = -Math.sin(cycle) * 22;
@@ -92,7 +98,7 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
     bodyOffsetY = Math.abs(Math.sin(cycle)) * 3;
     headOffsetY = bodyOffsetY * 0.8;
   } else if (animation === 'run') {
-    const cycle = frame * 0.35;
+    const cycle = animFrame * 0.35;
     legLRotate = Math.sin(cycle) * 35;
     legRRotate = -Math.sin(cycle) * 35;
     armLRotate = -Math.sin(cycle) * 40;
@@ -102,15 +108,15 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
     headRotate = Math.sin(cycle) * 4;
   } else if (animation === 'talk') {
     isTalkingFrame = true;
-    headOffsetY = Math.sin(frame * 0.2) * 2;
-    headRotate = Math.sin(frame * 0.15) * 3;
-    armLRotate = Math.sin(frame * 0.1) * 8 + 5;
-    armRRotate = -Math.sin(frame * 0.1) * 6;
+    headOffsetY = Math.sin(animFrame * 0.2) * 2;
+    headRotate = Math.sin(animFrame * 0.15) * 3;
+    armLRotate = Math.sin(animFrame * 0.1) * 8 + 5;
+    armRRotate = -Math.sin(animFrame * 0.1) * 6;
   } else if (animation === 'wave') {
-    armRRotate = -110 + Math.sin(frame * 0.3) * 25;
+    armRRotate = -110 + Math.sin(animFrame * 0.3) * 25;
     headRotate = -4;
   } else if (animation === 'dance') {
-    const cycle = frame * 0.25;
+    const cycle = animFrame * 0.25;
     bodyOffsetY = Math.abs(Math.sin(cycle)) * 5;
     headRotate = Math.sin(cycle) * 10;
     armLRotate = Math.sin(cycle) * 30 - 30;
@@ -118,13 +124,13 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
     legLRotate = Math.sin(cycle) * 12;
     legRRotate = -Math.sin(cycle) * 12;
   } else if (animation === 'celebrate') {
-    armLRotate = 130 + Math.sin(frame * 0.2) * 10;
-    armRRotate = -130 - Math.sin(frame * 0.2) * 10;
-    bodyOffsetY = Math.abs(Math.sin(frame * 0.2)) * 4;
-    headRotate = Math.sin(frame * 0.1) * 5;
+    armLRotate = 130 + Math.sin(animFrame * 0.2) * 10;
+    armRRotate = -130 - Math.sin(animFrame * 0.2) * 10;
+    bodyOffsetY = Math.abs(Math.sin(animFrame * 0.2)) * 4;
+    headRotate = Math.sin(animFrame * 0.1) * 5;
   } else if (animation === 'angry') {
-    headRotate = (Math.sin(frame * 0.5) * 2);
-    bodyOffsetY = (frame % 10 < 5 ? 1 : 0);
+    headRotate = (Math.sin(animFrame * 0.5) * 2);
+    bodyOffsetY = (animFrame % 10 < 5 ? 1 : 0);
     armLRotate = 15;
     armRRotate = -15;
   } else if (animation === 'bow') {
@@ -198,14 +204,14 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
   };
 
   // Eyes state (blinking every few seconds)
-  const isBlinking = frame % 55 < 3;
+  const isBlinking = animFrame % 55 < 3;
 
   // Mouth path (Format 1 Classic or Format 2 Realistic Shaded Lips / User Custom)
   const renderMouth = () => {
     return renderMouthElement({
       appearance,
       isTalkingFrame,
-      frame,
+      frame: animFrame,
     });
   };
 

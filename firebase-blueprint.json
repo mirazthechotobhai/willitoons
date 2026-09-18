@@ -17,12 +17,55 @@
         "createdAt": { "type": "number", "description": "Timestamp of creation" }
       },
       "required": ["id", "name", "joints", "appearance"]
+    },
+    "Background": {
+      "title": "Background",
+      "description": "An uploaded background image hosted permanently on ImgBB or cloud storage.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID of the background asset" },
+        "name": { "type": "string", "description": "Display name or file title" },
+        "url": { "type": "string", "description": "Direct image URL hosted on ImgBB or storage" },
+        "thumbnail": { "type": "string", "description": "Thumbnail URL or preview" },
+        "deleteUrl": { "type": "string", "description": "Optional delete URL from ImgBB" },
+        "imgbbId": { "type": "string", "description": "Optional ImgBB image ID" },
+        "width": { "type": "number", "description": "Image width in pixels" },
+        "height": { "type": "number", "description": "Image height in pixels" },
+        "createdAt": { "type": "number", "description": "Timestamp of creation" },
+        "updatedAt": { "type": "number", "description": "Timestamp of last update" }
+      },
+      "required": ["id", "name", "url", "createdAt"]
+    },
+    "MediaAsset": {
+      "title": "MediaAsset",
+      "description": "User uploaded media asset such as background, music audio, or video.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID of the asset" },
+        "name": { "type": "string", "description": "Display name" },
+        "type": { "type": "string", "description": "Asset type: image, video, audio" },
+        "url": { "type": "string", "description": "Asset URL or Data URL" },
+        "thumbnail": { "type": "string", "description": "Thumbnail or preview" },
+        "category": { "type": "string", "description": "Category name" },
+        "duration": { "type": "number", "description": "Duration in seconds" },
+        "createdAt": { "type": "number", "description": "Timestamp of creation" },
+        "updatedAt": { "type": "number", "description": "Timestamp of last update" }
+      },
+      "required": ["id", "name", "type", "url"]
     }
   },
   "firestore": {
     "/characters/{characterId}": {
       "schema": "Character",
       "description": "Collection of community and user custom saved characters"
+    },
+    "/backgrounds/{backgroundId}": {
+      "schema": "Background",
+      "description": "Collection of uploaded background images permanently saved by the user"
+    },
+    "/media_assets/{assetId}": {
+      "schema": "MediaAsset",
+      "description": "Collection of user uploaded media assets (images, music, audio, videos) permanently saved"
     }
   }
 }

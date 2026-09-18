@@ -37,6 +37,7 @@ import {
   ArrowDown,
   FlipHorizontal,
   Crosshair,
+  Sliders,
   X,
 } from 'lucide-react';
 
@@ -64,6 +65,9 @@ interface CanvasStageProps {
   canRedo?: boolean;
   onInteractionStart?: () => void;
   onInteractionEnd?: () => void;
+  onSplitAtPlayhead?: (elementId?: string, atTime?: number) => void;
+  onOpenProperties?: () => void;
+  isPropertiesOpen?: boolean;
 }
 
 export const CanvasStage: React.FC<CanvasStageProps> = ({
@@ -90,6 +94,9 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   canRedo = true,
   onInteractionStart,
   onInteractionEnd,
+  onSplitAtPlayhead,
+  onOpenProperties,
+  isPropertiesOpen,
 }) => {
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const stageViewportRef = useRef<HTMLDivElement | null>(null);
@@ -689,75 +696,114 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
             )}
 
             {/* STAGE ELEMENTS (Characters, Images, Speech Bubbles, Text, Effects, Backgrounds) */}
-            {scene.elements
-              .filter(el => {
+            {(() => {
+              // Group visible elements by trackIndex to bridge any head-to-head boundaries seamlessly
+              const trackMap = new Map<number, StageElement[]>();
+              scene.elements.forEach(el => {
+                if (el.visible === false) return;
+                const tIdx = el.trackIndex ?? 0;
+                const list = trackMap.get(tIdx) || [];
+                list.push(el);
+                trackMap.set(tIdx, list);
+              });
+
+              const activeElements = scene.elements.filter(el => {
                 if (el.visible === false) return false;
-                // Check if element is active at currentTime
-                return currentTime >= el.startTime && currentTime <= el.startTime + el.duration;
-              })
-              .sort((a, b) => a.zIndex - b.zIndex)
-              .map(el => {
-                const isSelected = el.id === selectedElementId;
+                const isExplicitlySelected = el.id === selectedElementId;
+                const tIdx = el.trackIndex ?? 0;
+                const sameTrack = (trackMap.get(tIdx) || []).sort((a, b) => a.startTime - b.startTime);
+                const currentIdx = sameTrack.findIndex(item => item.id === el.id);
+                const nextEl = currentIdx !== -1 && currentIdx < sameTrack.length - 1 ? sameTrack[currentIdx + 1] : null;
 
-                return (
-                  <div
-                    key={el.id}
-                    onClick={e => {
-                      if (el.locked) {
+                const elEnd = el.startTime + el.duration;
+                // If there's a head-to-head clip on the same line (touching or close within 0.25s),
+                // el stays visible right up to the start of the next clip (effectiveEnd = nextEl.startTime).
+                // This completely eliminates ANY missing frame, gap, or stutter during playback!
+                const isHeadToHead = nextEl && (nextEl.startTime >= elEnd - 0.05) && (nextEl.startTime - elEnd <= 0.25);
+                const effectiveEnd = isHeadToHead ? nextEl.startTime : elEnd;
+
+                // Active check: inclusive of start, clean continuous handoff at effectiveEnd
+                const isPlaybackActive = currentTime >= el.startTime && (
+                  currentTime < effectiveEnd ||
+                  (currentTime >= scene.duration && currentTime <= elEnd + 0.05)
+                );
+                // When an element is selected by the user, it is always active and visible on canvas so it can be controlled, moved, or edited freely
+                return isPlaybackActive || isExplicitlySelected;
+              });
+
+              return activeElements
+                .sort((a, b) => a.zIndex - b.zIndex)
+                .map(el => {
+                  const isSelected = el.id === selectedElementId;
+
+                  return (
+                    <div
+                      key={el.id}
+                      onClick={e => {
+                        if (el.locked) {
+                          e.stopPropagation();
+                          return;
+                        }
                         e.stopPropagation();
-                        return;
-                      }
-                      e.stopPropagation();
-                      onSelectElement(el.id);
-                    }}
-                    onPointerDown={e => {
-                      if (el.locked) {
-                        e.stopPropagation();
-                        return;
-                      }
-                      handleElementPointerDown(e, el);
-                    }}
-                    className={`absolute transition-shadow select-none ${
-                      el.locked ? 'cursor-default pointer-events-none' : 'cursor-move touch-none'
-                    } ${
-                      !el.locked && isSelected ? 'ring-2 ring-blue-500 z-50' : !el.locked ? 'hover:ring-1 hover:ring-blue-400/50' : ''
-                    }`}
-                    style={{
-                      left: `${el.x}%`,
-                      top: `${el.y}%`,
-                      width: `${el.width}%`,
-                      height: `${el.height}%`,
-                      transform: `translate(-50%, -50%) rotate(${el.rotation || 0}deg)`,
-                      opacity: el.opacity ?? 1,
-                      zIndex: el.zIndex,
-                      touchAction: 'none',
-                      userSelect: 'none',
-                    }}
-                  >
-                    {/* CHARACTER ELEMENT */}
-                    {el.type === 'character' && el.characterData && (
-                      <div className="w-full h-full pointer-events-none">
-                        <CartoonCharacter
-                          model={el.characterData}
-                          animation={el.animation || 'idle'}
-                          flipped={el.scaleX === -1}
-                          isLipSyncing={el.isLipSyncing || el.animation === 'talk'}
-                          width="100%"
-                          height="100%"
+                        onSelectElement(el.id);
+                      }}
+                      onPointerDown={e => {
+                        if (el.locked) {
+                          e.stopPropagation();
+                          return;
+                        }
+                        handleElementPointerDown(e, el);
+                      }}
+                      className={`absolute transition-shadow select-none ${
+                        el.locked ? 'cursor-default pointer-events-none' : 'cursor-move touch-none'
+                      } ${
+                        !el.locked && isSelected ? 'ring-2 ring-blue-500 z-50' : !el.locked ? 'hover:ring-1 hover:ring-blue-400/50' : ''
+                      }`}
+                      style={{
+                        left: `${el.x}%`,
+                        top: `${el.y}%`,
+                        width: `${el.width}%`,
+                        height: `${el.height}%`,
+                        transform: `translate(-50%, -50%) rotate(${el.rotation || 0}deg)`,
+                        opacity: el.opacity ?? 1,
+                        zIndex: el.zIndex,
+                        touchAction: 'none',
+                        userSelect: 'none',
+                      }}
+                    >
+                      {/* CHARACTER ELEMENT */}
+                      {el.type === 'character' && el.characterData && (
+                        <div className="w-full h-full pointer-events-none">
+                          <CartoonCharacter
+                            model={el.characterData}
+                            animation={el.animation || 'idle'}
+                            flipped={el.scaleX === -1}
+                            isLipSyncing={el.isLipSyncing || el.animation === 'talk'}
+                            currentTime={currentTime}
+                            width="100%"
+                            height="100%"
+                          />
+                        </div>
+                      )}
+
+                      {/* IMAGE / VIDEO ELEMENT */}
+                      {el.type === 'image' && el.mediaUrl && (
+                        <img
+                          src={el.mediaUrl}
+                          alt={el.name}
+                          loading="eager"
+                          decoding="sync"
+                          className={`w-full h-full pointer-events-none select-none ${
+                            el.fitMode === 'contain'
+                              ? 'object-contain'
+                              : el.fitMode === 'fill'
+                              ? 'object-fill'
+                              : el.fitMode === 'cover' || el.isBackground
+                              ? 'object-cover'
+                              : 'object-contain drop-shadow'
+                          }`}
                         />
-                      </div>
-                    )}
-
-                    {/* IMAGE / VIDEO ELEMENT */}
-                    {el.type === 'image' && el.mediaUrl && (
-                      <img
-                        src={el.mediaUrl}
-                        alt={el.name}
-                        className={`w-full h-full pointer-events-none select-none ${
-                          el.isBackground ? 'object-cover' : 'object-contain drop-shadow'
-                        }`}
-                      />
-                    )}
+                      )}
 
                     {/* EFFECT / FILTER ELEMENT */}
                     {el.type === 'effect' && (
@@ -908,11 +954,73 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                         >
                           <div className="h-2.5 w-0.5 bg-blue-500 rounded-full pointer-events-none" />
                         </div>
+
+                        {/* On-canvas Angle Switcher for Character (3/4 Front, Front, 3/4 Back) */}
+                        {el.type === 'character' && el.characterData && (
+                          <div
+                            className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-900/95 border border-blue-500/80 rounded-full px-1.5 py-0.5 shadow-2xl flex items-center space-x-1 z-50 pointer-events-auto select-none"
+                            onClick={e => e.stopPropagation()}
+                            onPointerDown={e => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              onClick={e => {
+                                e.stopPropagation();
+                                onUpdateElement(el.id, {
+                                  characterData: { ...el.characterData!, angle: 'threeQuarterFront' },
+                                });
+                              }}
+                              className={`px-2 py-0.5 rounded-full text-[9px] font-bold cursor-pointer transition-all whitespace-nowrap ${
+                                (el.characterData.angle || 'threeQuarterFront') === 'threeQuarterFront'
+                                  ? 'bg-blue-600 text-white shadow-xs'
+                                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                              }`}
+                              title="3/4 Front Angle"
+                            >
+                              3/4 Front
+                            </button>
+                            <button
+                              type="button"
+                              onClick={e => {
+                                e.stopPropagation();
+                                onUpdateElement(el.id, {
+                                  characterData: { ...el.characterData!, angle: 'front' },
+                                });
+                              }}
+                              className={`px-2 py-0.5 rounded-full text-[9px] font-bold cursor-pointer transition-all whitespace-nowrap ${
+                                el.characterData.angle === 'front'
+                                  ? 'bg-blue-600 text-white shadow-xs'
+                                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                              }`}
+                              title="Front Angle"
+                            >
+                              Front
+                            </button>
+                            <button
+                              type="button"
+                              onClick={e => {
+                                e.stopPropagation();
+                                onUpdateElement(el.id, {
+                                  characterData: { ...el.characterData!, angle: 'threeQuarterBack' },
+                                });
+                              }}
+                              className={`px-2 py-0.5 rounded-full text-[9px] font-bold cursor-pointer transition-all whitespace-nowrap ${
+                                el.characterData.angle === 'threeQuarterBack'
+                                  ? 'bg-blue-600 text-white shadow-xs'
+                                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                              }`}
+                              title="3/4 Back Angle"
+                            >
+                              3/4 Back
+                            </button>
+                          </div>
+                        )}
                       </>
                     )}
                   </div>
                 );
-              })}
+              });
+            })()}
           </div>
         </div>
 
@@ -1024,7 +1132,110 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
               </button>
             </div>
 
+            {/* Character Angles: 3/4 Front, Front, 3/4 Back */}
+            {selectedElement.type === 'character' && selectedElement.characterData && (
+              <div className="flex items-center bg-slate-800 p-0.5 rounded border border-slate-700 space-x-0.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    onUpdateElement(selectedElement.id, {
+                      characterData: {
+                        ...selectedElement.characterData!,
+                        angle: 'threeQuarterFront',
+                      },
+                    });
+                  }}
+                  className={`px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
+                    (selectedElement.characterData.angle || 'threeQuarterFront') === 'threeQuarterFront'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-700'
+                  }`}
+                  title="3/4 Front Angle"
+                >
+                  3/4 Front
+                </button>
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    onUpdateElement(selectedElement.id, {
+                      characterData: {
+                        ...selectedElement.characterData!,
+                        angle: 'front',
+                      },
+                    });
+                  }}
+                  className={`px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
+                    selectedElement.characterData.angle === 'front'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-700'
+                  }`}
+                  title="Front Angle"
+                >
+                  Front
+                </button>
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    onUpdateElement(selectedElement.id, {
+                      characterData: {
+                        ...selectedElement.characterData!,
+                        angle: 'threeQuarterBack',
+                      },
+                    });
+                  }}
+                  className={`px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
+                    selectedElement.characterData.angle === 'threeQuarterBack'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-700'
+                  }`}
+                  title="3/4 Back Angle"
+                >
+                  3/4 Back
+                </button>
+              </div>
+            )}
+
             <div className="w-px h-3 bg-slate-700/80 mx-0.5 shrink-0" />
+
+            {/* Quick Delete Element Button (Replaces Properties before Fit Screen) */}
+            <button
+              type="button"
+              onClick={e => {
+                e.stopPropagation();
+                if (selectedElement) {
+                  onDeleteElement(selectedElement.id);
+                }
+              }}
+              className="flex items-center space-x-1 px-1.5 py-0.5 bg-rose-600 hover:bg-rose-500 text-white rounded cursor-pointer shrink-0 font-medium text-[10px] shadow-xs"
+              title="Delete this selected layer"
+            >
+              <Trash2 className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+              <span>Delete</span>
+            </button>
+
+            {/* Quick Fit to Screen Button */}
+            <button
+              type="button"
+              onClick={e => {
+                e.stopPropagation();
+                onUpdateElement(selectedElement.id, {
+                  x: 50,
+                  y: 50,
+                  width: 100,
+                  height: 100,
+                  rotation: 0,
+                  ...(selectedElement.type === 'image' ? { isBackground: true, fitMode: 'cover' } : {}),
+                });
+              }}
+              className="flex items-center space-x-1 px-1.5 py-0.5 bg-blue-600 hover:bg-blue-500 rounded text-white cursor-pointer shrink-0 font-medium text-[10px] shadow-xs"
+              title="Fit element to 100% canvas screen (auto adjust)"
+            >
+              <Maximize className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+              <span>Fit Screen</span>
+            </button>
 
             {/* Quick Center Button */}
             <button
@@ -1114,11 +1325,28 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
           </button>
 
           <button
-            title="Split element at playhead"
-            className="flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+            onClick={() => onSplitAtPlayhead?.(selectedElementId || undefined, currentTime)}
+            title={`Split layer at red playhead line (${currentTime.toFixed(1)}s)`}
+            className="flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 transition-colors cursor-pointer active:scale-95"
           >
-            <Scissors className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-            <span className="text-[11px] hidden xl:inline">Split</span>
+            <Scissors className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-amber-500" />
+            <span className="text-[11px] hidden xl:inline font-medium">Split</span>
+          </button>
+
+          {/* Properties Button */}
+          <button
+            onClick={() => onOpenProperties?.()}
+            title="Open Properties Panel"
+            className={`flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 rounded transition-colors cursor-pointer ${
+              isPropertiesOpen
+                ? 'bg-blue-600 text-white font-semibold shadow-xs'
+                : selectedElementId
+                  ? 'bg-blue-50 hover:bg-blue-100 text-blue-700 font-semibold border border-blue-200'
+                  : 'hover:bg-slate-100 text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Sliders className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            <span className="text-[11px] hidden xl:inline font-medium">Properties</span>
           </button>
 
           <button

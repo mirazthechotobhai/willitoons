@@ -79,7 +79,7 @@ export const ExtraToolsDrawer: React.FC<ExtraToolsDrawerProps> = ({
   };
 
   return (
-    <div className="w-80 h-full bg-white border-r border-slate-200 flex flex-col z-20 shadow-md select-none">
+    <div className="w-full sm:w-80 md:w-88 max-w-full h-full max-h-[100dvh] bg-white border-r border-slate-200 flex flex-col z-20 shadow-md select-none overflow-hidden">
       
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">

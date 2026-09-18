@@ -38,6 +38,7 @@ export const CharacterDrawer: React.FC<CharacterDrawerProps> = ({
 }) => {
   const [activeCategory, setActiveCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState('');
+  const [charAngles, setCharAngles] = useState<Record<string, CharacterAngle>>({});
 
   if (!isOpen) return null;
 
@@ -51,7 +52,7 @@ export const CharacterDrawer: React.FC<CharacterDrawerProps> = ({
   });
 
   return (
-    <div className="w-84 sm:w-96 h-full bg-white border-r border-slate-200 flex flex-col z-20 shadow-2xl select-none">
+    <div className="w-full sm:w-84 md:w-96 max-w-full h-full max-h-[100dvh] bg-white border-r border-slate-200 flex flex-col z-20 shadow-2xl select-none overflow-hidden">
       
       {/* Header (Screenshot 4: Characters + Create) */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">
@@ -115,53 +116,107 @@ export const CharacterDrawer: React.FC<CharacterDrawerProps> = ({
 
       {/* 2-Column Character Cards Grid */}
       <div className="flex-1 p-3 overflow-y-auto grid grid-cols-2 gap-3 auto-rows-max bg-slate-50/30">
-        {filteredCharacters.map(char => (
-          <div
-            key={char.id}
-            draggable
-            onDragStart={e => onDragStartCharacter(e, char)}
-            onClick={() => onSelectCharacter(char)}
-            className="group relative bg-white border border-slate-200 hover:border-blue-400 rounded-xl overflow-hidden shadow-xs hover:shadow-md transition-all cursor-grab active:cursor-grabbing flex flex-col"
-          >
-            {/* Top Card Bar: Name & Edit Button */}
-            <div className="flex items-center justify-between p-2 pb-0 z-10">
-              <span className="text-[11px] font-semibold text-slate-700 truncate max-w-[85px]">
-                {char.name}
-              </span>
-              <button
-                onClick={e => {
-                  e.stopPropagation();
-                  onEditCharacter(char);
-                }}
-                className="flex items-center space-x-0.5 px-1.5 py-0.5 text-[10px] bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-600 rounded border border-slate-200 transition-colors cursor-pointer"
-                title="Edit Character & IK Rig"
-              >
-                <Edit2 className="w-2.5 h-2.5" />
-                <span>Edit</span>
-              </button>
-            </div>
+        {filteredCharacters.map(char => {
+          const currentAngle: CharacterAngle = charAngles[char.id] || char.angle || 'threeQuarterFront';
+          const effectiveChar: CharacterModel = { ...char, angle: currentAngle };
 
-            {/* Character Visual */}
-            <div className="w-full h-36 flex items-center justify-center p-2 relative bg-slate-50/60">
-              <div className="w-24 h-32 group-hover:scale-105 transition-transform">
-                <CartoonCharacter
-                  model={char}
-                  animation="idle"
-                  skeletonMode={false}
-                  width="100%"
-                  height="100%"
-                />
+          return (
+            <div
+              key={char.id}
+              draggable
+              onDragStart={e => onDragStartCharacter(e, effectiveChar)}
+              onClick={() => onSelectCharacter(effectiveChar)}
+              className="group relative bg-white border border-slate-200 hover:border-blue-400 rounded-xl overflow-hidden shadow-xs hover:shadow-md transition-all cursor-grab active:cursor-grabbing flex flex-col"
+            >
+              {/* Top Card Bar: Name & Edit Button */}
+              <div className="flex items-center justify-between p-2 pb-0 z-10">
+                <span className="text-[11px] font-semibold text-slate-700 truncate max-w-[85px]">
+                  {char.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    onEditCharacter(char);
+                  }}
+                  className="flex items-center space-x-0.5 px-1.5 py-0.5 text-[10px] bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-600 rounded border border-slate-200 transition-colors cursor-pointer"
+                  title="Edit Character & IK Rig"
+                >
+                  <Edit2 className="w-2.5 h-2.5" />
+                  <span>Edit</span>
+                </button>
+              </div>
+
+              {/* Character Visual - Click here to add to timeline */}
+              <div
+                className="w-full h-36 flex items-center justify-center p-2 relative bg-slate-50/60 cursor-pointer hover:bg-blue-50/40 transition-colors"
+                title="Click character to add to timeline"
+              >
+                <div className="w-24 h-32 group-hover:scale-105 transition-transform">
+                  <CartoonCharacter
+                    model={effectiveChar}
+                    animation="idle"
+                    skeletonMode={false}
+                    width="100%"
+                    height="100%"
+                  />
+                </div>
+              </div>
+
+              {/* Interactive 3-Angle Switcher: 3/4 Front, Front, 3/4 Back */}
+              <div
+                className="flex items-center justify-between p-1 bg-slate-100/90 border-t border-slate-200 text-[8.5px] font-bold gap-0.5 select-none"
+                onClick={e => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    setCharAngles(prev => ({ ...prev, [char.id]: 'threeQuarterFront' }));
+                  }}
+                  className={`flex-1 py-1 px-0.5 rounded text-center transition-all cursor-pointer whitespace-nowrap ${
+                    currentAngle === 'threeQuarterFront'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                  }`}
+                  title="3/4 Front Angle"
+                >
+                  3/4 Front
+                </button>
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    setCharAngles(prev => ({ ...prev, [char.id]: 'front' }));
+                  }}
+                  className={`flex-1 py-1 px-0.5 rounded text-center transition-all cursor-pointer whitespace-nowrap ${
+                    currentAngle === 'front'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                  }`}
+                  title="Front Angle"
+                >
+                  Front
+                </button>
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    setCharAngles(prev => ({ ...prev, [char.id]: 'threeQuarterBack' }));
+                  }}
+                  className={`flex-1 py-1 px-0.5 rounded text-center transition-all cursor-pointer whitespace-nowrap ${
+                    currentAngle === 'threeQuarterBack'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                  }`}
+                  title="3/4 Back Angle"
+                >
+                  3/4 Back
+                </button>
               </div>
             </div>
-
-            {/* Bottom Angle Tags */}
-            <div className="flex items-center justify-between px-2 py-1.5 bg-slate-100 border-t border-slate-200 text-[8px] font-semibold text-slate-400">
-              <span className={char.angle === 'front' ? 'text-blue-600 font-bold' : ''}>FRONT</span>
-              <span className={char.angle === 'threeQuarterFront' ? 'text-blue-600 font-bold' : ''}>3/4 FRONT</span>
-              <span className={char.angle === 'threeQuarterBack' ? 'text-blue-600 font-bold' : ''}>3/4 BACK</span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
 
         {filteredCharacters.length === 0 && (
           <div className="col-span-2 py-12 text-center text-slate-400 text-xs">

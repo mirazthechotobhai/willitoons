@@ -11,9 +11,38 @@ service cloud.firestore {
         data.appearance is map;
     }
 
+    // Helper function to validate Background schema
+    function isValidBackground(data) {
+      return data != null &&
+        data.id is string &&
+        data.name is string &&
+        data.url is string;
+    }
+
+    // Helper function to validate MediaAsset schema (images, audio, music, video)
+    function isValidMediaAsset(data) {
+      return data != null &&
+        data.id is string &&
+        data.name is string &&
+        data.type is string &&
+        data.url is string;
+    }
+
     match /characters/{characterId} {
       allow read: if true;
       allow create, update: if isValidCharacter(request.resource.data);
+      allow delete: if true;
+    }
+
+    match /backgrounds/{backgroundId} {
+      allow read: if true;
+      allow create, update: if isValidBackground(request.resource.data);
+      allow delete: if true;
+    }
+
+    match /media_assets/{assetId} {
+      allow read: if true;
+      allow create, update: if isValidMediaAsset(request.resource.data);
       allow delete: if true;
     }
 

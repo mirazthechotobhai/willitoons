@@ -379,7 +379,32 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           else if (el.type === 'image' && el.mediaUrl) {
             const img = imageAssets.get(el.mediaUrl);
             if (img) {
-              ctx.drawImage(img, -w / 2, -h / 2, w, h);
+              const naturalW = img.naturalWidth || img.width || 1;
+              const naturalH = img.naturalHeight || img.height || 1;
+              const imgRatio = naturalW / naturalH;
+              const boxRatio = w / h;
+
+              if (el.fitMode === 'cover' || (el.isBackground && el.fitMode !== 'contain')) {
+                let sx = 0, sy = 0, sw = naturalW, sh = naturalH;
+                if (imgRatio > boxRatio) {
+                  sw = naturalH * boxRatio;
+                  sx = (naturalW - sw) / 2;
+                } else {
+                  sh = naturalW / boxRatio;
+                  sy = (naturalH - sh) / 2;
+                }
+                ctx.drawImage(img, sx, sy, sw, sh, -w / 2, -h / 2, w, h);
+              } else if (el.fitMode === 'contain' || !el.isBackground) {
+                let dw = w, dh = h;
+                if (imgRatio > boxRatio) {
+                  dh = w / imgRatio;
+                } else {
+                  dw = h * imgRatio;
+                }
+                ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+              } else {
+                ctx.drawImage(img, -w / 2, -h / 2, w, h);
+              }
             }
           }
 

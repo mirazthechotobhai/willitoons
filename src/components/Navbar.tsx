@@ -64,7 +64,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Brand Icon Badge / Mobile Left Rail Toggle */}
         <button
           onClick={onToggleMobileLeftRail}
-          title="WilliToons Studio - 2D Animation & Cartoon Video Maker"
+          title="WilliToons - 2D Animation & Cartoon Video Maker"
           className={`flex items-center space-x-2 p-1 -ml-1 rounded-lg transition-all cursor-pointer active:scale-95 ${
             isMobileLeftRailOpen
               ? 'bg-slate-700 ring-1 ring-amber-400'
@@ -75,7 +75,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             W
           </div>
           <span className="font-extrabold tracking-tight text-sm text-slate-100 hidden sm:inline-block">
-            Willi<span className="text-amber-400">Toons</span> <span className="font-semibold text-slate-300 text-xs">Studio</span>
+            Willi<span className="text-amber-400">Toons</span>
           </span>
         </button>
 

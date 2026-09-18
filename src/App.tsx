@@ -12,6 +12,10 @@ import { DEFAULT_CHARACTERS } from './utils/characterPresets';
 import { STOCK_BACKGROUNDS, STOCK_AUDIO } from './utils/mediaStock';
 import { playSyntheticAudio, playUploadedAudio } from './utils/audioEngine';
 import { loadCharactersFromCloud } from './services/characterService';
+import {
+  loadAllMediaAssetsFromCloud,
+  deleteMediaAssetFromCloud,
+} from './services/mediaAssetService';
 
 // Subcomponents
 import { Navbar } from './components/Navbar';
@@ -220,6 +224,34 @@ export default function App() {
   // Media Library State (user uploaded + stock)
   const [userAssets, setUserAssets] = useState<MediaAsset[]>([]);
 
+  // Load saved cloud media assets (backgrounds, images, audio, music) from Firebase Firestore & local storage on startup
+  useEffect(() => {
+    let isMounted = true;
+    async function fetchCloudMedia() {
+      try {
+        const cloudAssets = await loadAllMediaAssetsFromCloud();
+        if (isMounted && cloudAssets && cloudAssets.length > 0) {
+          setUserAssets(cloudAssets);
+        }
+      } catch (err) {
+        console.warn('Could not load media assets from Firebase cloud:', err);
+      }
+    }
+    fetchCloudMedia();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleDeleteAsset = async (id: string) => {
+    setUserAssets(prev => prev.filter(a => a.id !== id));
+    try {
+      await deleteMediaAssetFromCloud(id);
+    } catch (err) {
+      console.warn('Could not delete media asset from cloud:', err);
+    }
+  };
+
   // Selection & Active Tool States
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
   const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null);
@@ -228,15 +260,11 @@ export default function App() {
   const [isMobileLeftRailOpen, setIsMobileLeftRailOpen] = useState(false);
   const [isMobileRightRailOpen, setIsMobileRightRailOpen] = useState(false);
 
+  // Element & Audio Selection Handlers - Selection does NOT auto-open Properties drawer
   const handleSelectElement = (id: string | null) => {
     setSelectedElementId(id);
     if (id) {
       setSelectedAudioId(null);
-      setActiveRightTab('inspector');
-    } else {
-      if (activeRightTab === 'inspector') {
-        setActiveRightTab(null);
-      }
     }
   };
 
@@ -244,17 +272,10 @@ export default function App() {
     setSelectedAudioId(id);
     if (id) {
       setSelectedElementId(null);
-      setActiveRightTab('inspector');
-    } else {
-      if (activeRightTab === 'inspector') {
-        setActiveRightTab(null);
-      }
     }
   };
 
   const handleCloseInspector = () => {
-    setSelectedElementId(null);
-    setSelectedAudioId(null);
     setActiveRightTab(null);
   };
 
@@ -393,9 +414,36 @@ export default function App() {
     setScenes(prevScenes =>
       prevScenes.map((sc, idx) => {
         if (idx !== activeSceneIndex) return sc;
+        const maxZ = Math.max(...sc.elements.map(e => e.zIndex || 0), 0);
+        // If trackIndex is not explicitly set, place this new layer at the very top (trackIndex: 0)
+        // and push all other existing elements and audio tracks down by 1 line
+        const isNewTopLayer = newElem.trackIndex === undefined;
+        const targetTrackIndex = isNewTopLayer ? 0 : newElem.trackIndex!;
+
+        const shiftedElements = sc.elements.map((el, elIdx) => ({
+          ...el,
+          trackIndex: isNewTopLayer
+            ? (el.trackIndex !== undefined ? el.trackIndex : elIdx) + 1
+            : el.trackIndex,
+        }));
+
+        const shiftedAudio = (sc.audioTracks || []).map((tr, trIdx) => ({
+          ...tr,
+          trackIndex: isNewTopLayer
+            ? (tr.trackIndex !== undefined ? tr.trackIndex : trIdx) + 1
+            : tr.trackIndex,
+        }));
+
+        const elementToAdd: StageElement = {
+          ...newElem,
+          trackIndex: targetTrackIndex,
+          zIndex: newElem.zIndex || (maxZ + 10),
+        };
+
         return {
           ...sc,
-          elements: [...sc.elements, newElem],
+          elements: [elementToAdd, ...shiftedElements],
+          audioTracks: shiftedAudio,
         };
       })
     );
@@ -406,9 +454,32 @@ export default function App() {
     setScenes(prevScenes =>
       prevScenes.map((sc, idx) => {
         if (idx !== activeSceneIndex) return sc;
+        const isNewTopLayer = newTrack.trackIndex === undefined;
+        const targetTrackIndex = isNewTopLayer ? 0 : newTrack.trackIndex!;
+
+        const shiftedElements = sc.elements.map((el, elIdx) => ({
+          ...el,
+          trackIndex: isNewTopLayer
+            ? (el.trackIndex !== undefined ? el.trackIndex : elIdx) + 1
+            : el.trackIndex,
+        }));
+
+        const shiftedAudio = (sc.audioTracks || []).map((tr, trIdx) => ({
+          ...tr,
+          trackIndex: isNewTopLayer
+            ? (tr.trackIndex !== undefined ? tr.trackIndex : trIdx) + 1
+            : tr.trackIndex,
+        }));
+
+        const trackToAdd: AudioTrackItem = {
+          ...newTrack,
+          trackIndex: targetTrackIndex,
+        };
+
         return {
           ...sc,
-          audioTracks: [...sc.audioTracks, newTrack],
+          elements: shiftedElements,
+          audioTracks: [trackToAdd, ...shiftedAudio],
         };
       })
     );
@@ -446,10 +517,10 @@ export default function App() {
     const newScene: Scene = {
       id: `scene-${Date.now()}`,
       name: `Scene ${newSceneIndex}`,
-      duration: 10,
+      duration: 120, // 2 minutes automatic
       background: {
-        type: 'image',
-        value: STOCK_BACKGROUNDS[newSceneIndex % STOCK_BACKGROUNDS.length].url,
+        type: 'color',
+        value: '#0f172a',
       },
       elements: [],
       audioTracks: [],
@@ -465,6 +536,121 @@ export default function App() {
     setScenes(filtered);
     setActiveSceneIndex(Math.max(0, index - 1));
     setCurrentTime(0);
+  };
+
+  const handleUpdateScene = (index: number, updates: Partial<Scene>) => {
+    setScenes(prevScenes =>
+      prevScenes.map((sc, idx) => (idx === index ? { ...sc, ...updates } : sc))
+    );
+  };
+
+  // Split element or audio track at playhead (exact cut without overlapping extra remainder)
+  const handleSplitAtPlayhead = (elementId?: string, atTime?: number) => {
+    const splitTime = atTime !== undefined ? atTime : currentTime;
+    const currentScene = scenes[activeSceneIndex];
+    if (!currentScene) return;
+
+    let targetElement = elementId ? currentScene.elements.find(el => el.id === elementId) : null;
+    let targetAudio = selectedAudioId ? currentScene.audioTracks?.find(at => at.id === selectedAudioId) : null;
+
+    if (!targetElement && !targetAudio) {
+      targetElement = currentScene.elements.find(
+        el => splitTime > el.startTime + 0.05 && splitTime < el.startTime + el.duration - 0.05
+      ) || null;
+      if (!targetElement) {
+        targetAudio = currentScene.audioTracks?.find(
+          at => splitTime > at.startTime + 0.05 && splitTime < at.startTime + at.duration - 0.05
+        ) || null;
+      }
+    }
+
+    if (targetElement) {
+      const origStart = Math.round(targetElement.startTime * 1000) / 1000;
+      const origDuration = Math.round(targetElement.duration * 1000) / 1000;
+      const origEnd = origStart + origDuration;
+
+      if (splitTime <= origStart + 0.05 || splitTime >= origEnd - 0.05) {
+        return;
+      }
+
+      // Exact split point rounded to milliseconds
+      const cleanSplitTime = Number(splitTime.toFixed(3));
+      const firstDuration = Number((cleanSplitTime - origStart).toFixed(3));
+      const secondStartTime = cleanSplitTime; // Part 1 ends and Part 2 starts at the EXACT same millisecond
+      const secondDuration = Number((origEnd - cleanSplitTime).toFixed(3));
+
+      if (firstDuration <= 0.05 || secondDuration <= 0.05) return;
+
+      const secondPartId = `elem-split-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const secondPart: StageElement = {
+        ...targetElement,
+        id: secondPartId,
+        name: `${targetElement.name.replace(/ \(Part \d+\)/, '')} (Part 2)`,
+        startTime: secondStartTime,
+        duration: secondDuration,
+        trackIndex: targetElement.trackIndex ?? 0,
+        zIndex: targetElement.zIndex,
+      };
+
+      const updatedScenes = scenes.map((sc, idx) => {
+        if (idx !== activeSceneIndex) return sc;
+        return {
+          ...sc,
+          elements: sc.elements.flatMap(el => {
+            if (el.id === targetElement!.id) {
+              return [{ ...el, startTime: origStart, duration: firstDuration }, secondPart];
+            }
+            return [el];
+          }),
+        };
+      });
+
+      setScenes(updatedScenes);
+      pushHistorySnapshot(updatedScenes);
+      handleSelectElement(secondPartId);
+    } else if (targetAudio) {
+      const origStart = Math.round(targetAudio.startTime * 1000) / 1000;
+      const origDuration = Math.round(targetAudio.duration * 1000) / 1000;
+      const origEnd = origStart + origDuration;
+
+      if (splitTime <= origStart + 0.05 || splitTime >= origEnd - 0.05) {
+        return;
+      }
+
+      const cleanSplitTime = Number(splitTime.toFixed(3));
+      const firstDuration = Number((cleanSplitTime - origStart).toFixed(3));
+      const secondStartTime = cleanSplitTime;
+      const secondDuration = Number((origEnd - cleanSplitTime).toFixed(3));
+
+      if (firstDuration <= 0.05 || secondDuration <= 0.05) return;
+
+      const secondPartId = `audio-split-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const secondPart: AudioTrackItem = {
+        ...targetAudio,
+        id: secondPartId,
+        name: `${targetAudio.name.replace(/ \(Part \d+\)/, '')} (Part 2)`,
+        startTime: secondStartTime,
+        duration: secondDuration,
+        trackIndex: targetAudio.trackIndex ?? 0,
+      };
+
+      const updatedScenes = scenes.map((sc, idx) => {
+        if (idx !== activeSceneIndex) return sc;
+        return {
+          ...sc,
+          audioTracks: (sc.audioTracks || []).flatMap(at => {
+            if (at.id === targetAudio!.id) {
+              return [{ ...at, startTime: origStart, duration: firstDuration }, secondPart];
+            }
+            return [at];
+          }),
+        };
+      });
+
+      setScenes(updatedScenes);
+      pushHistorySnapshot(updatedScenes);
+      handleSelectAudio(secondPartId);
+    }
   };
 
   // --- DRAG AND DROP ONTO STAGE ---
@@ -485,24 +671,17 @@ export default function App() {
         y: dropY,
         width: 25,
         height: 50,
-        zIndex: activeScene.elements.length + 1,
+        zIndex: (activeScene.elements.length + 1) * 10,
         startTime: 0,
         duration: activeScene.duration,
         animation: 'idle',
         scaleX: 1,
       };
-
-      setScenes(prevScenes =>
-        prevScenes.map((sc, idx) => {
-          if (idx !== activeSceneIndex) return sc;
-          return { ...sc, elements: [...sc.elements, newElem] };
-        })
-      );
-      handleSelectElement(newElem.id);
+      handleAddElement(newElem);
     } else if (itemType === 'media') {
       const media = itemData as MediaAsset;
       if (media.type === 'audio') {
-        // Add to audio tracks
+        // Add to audio tracks (at top of timeline)
         const newTrack: AudioTrackItem = {
           id: `audio-track-${Date.now()}`,
           name: media.name,
@@ -512,15 +691,9 @@ export default function App() {
           volume: 0.8,
           isMuted: false,
         };
-        setScenes(prevScenes =>
-          prevScenes.map((sc, idx) => {
-            if (idx !== activeSceneIndex) return sc;
-            return { ...sc, audioTracks: [...sc.audioTracks, newTrack] };
-          })
-        );
-        handleSelectAudio(newTrack.id);
+        handleAddAudioTrack(newTrack);
       } else {
-        // If image or video, check if it's a full background or a prop element
+        // If image or video prop
         const isProp = dropX > 15 && dropX < 85 && dropY > 15 && dropY < 85;
         if (isProp && media.type === 'image') {
           const newElem: StageElement = {
@@ -532,19 +705,13 @@ export default function App() {
             y: dropY,
             width: 28,
             height: 28,
-            zIndex: activeScene.elements.length + 1,
+            zIndex: (activeScene.elements.length + 1) * 10,
             startTime: currentTime,
             duration: Math.min(activeScene.duration, 8),
           };
-          setScenes(prevScenes =>
-            prevScenes.map((sc, idx) => {
-              if (idx !== activeSceneIndex) return sc;
-              return { ...sc, elements: [...sc.elements, newElem] };
-            })
-          );
-          handleSelectElement(newElem.id);
+          handleAddElement(newElem);
         } else {
-          // Set as Scene Background and create/update background layer element
+          // Add as background element on top layer
           const bgId = `elem-bg-${Date.now()}`;
           const newBgElem: StageElement = {
             id: bgId,
@@ -555,30 +722,14 @@ export default function App() {
             y: 50,
             width: 100,
             height: 100,
-            zIndex: 1,
+            zIndex: (activeScene.elements.length + 1) * 10,
             startTime: 0,
             duration: activeScene.duration,
             isBackground: true,
             locked: false,
             visible: true,
           };
-
-          setScenes(prevScenes =>
-            prevScenes.map((sc, idx) => {
-              if (idx !== activeSceneIndex) return sc;
-              // Replace existing background elements or append
-              const filteredElements = sc.elements.filter(e => !e.isBackground);
-              return {
-                ...sc,
-                background: {
-                  type: media.type === 'video' ? 'video' : 'image',
-                  value: media.url,
-                },
-                elements: [newBgElem, ...filteredElements],
-              };
-            })
-          );
-          handleSelectElement(bgId);
+          handleAddElement(newBgElem);
         }
       }
     }
@@ -598,18 +749,11 @@ export default function App() {
       bubbleColor: '#ffffff',
       textColor: '#0f172a',
       fontSize: type === 'speechBubble' ? 15 : 24,
-      zIndex: activeScene.elements.length + 2,
+      zIndex: (activeScene.elements.length + 1) * 10,
       startTime: currentTime,
       duration: Math.min(activeScene.duration - currentTime, 6),
     };
-
-    setScenes(prevScenes =>
-      prevScenes.map((sc, idx) => {
-        if (idx !== activeSceneIndex) return sc;
-        return { ...sc, elements: [...sc.elements, newElem] };
-      })
-    );
-    handleSelectElement(newElem.id);
+    handleAddElement(newElem);
   };
 
   // Drag Start helper for character cards
@@ -702,7 +846,7 @@ export default function App() {
         {/* On mobile: takes 100% full screen width by default */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0 w-full">
 
-          {/* UPPER ROW: Center Canvas Stage + Right Inspector */}
+          {/* UPPER ROW: Center Canvas Stage */}
           <div className="flex-1 flex overflow-hidden min-h-0 min-w-0 relative">
             
             {/* Canvas Stage - Stays 100% full-width and centered, never moves or shifts */}
@@ -714,7 +858,7 @@ export default function App() {
               onTogglePlay={() => setIsPlaying(!isPlaying)}
               onSeek={time => setCurrentTime(time)}
               selectedElementId={selectedElementId}
-              onSelectElement={id => setSelectedElementId(id)}
+              onSelectElement={handleSelectElement}
               onUpdateElement={handleUpdateElement}
               onDeleteElement={handleDeleteElement}
               onDuplicateElement={handleDuplicateElement}
@@ -730,29 +874,14 @@ export default function App() {
               canRedo={historyIndex < history.length - 1}
               onInteractionStart={handleInteractionStart}
               onInteractionEnd={handleInteractionEnd}
+              onSplitAtPlayhead={handleSplitAtPlayhead}
+              onOpenProperties={() => setActiveRightTab(activeRightTab === 'inspector' ? null : 'inspector')}
+              isPropertiesOpen={activeRightTab === 'inspector'}
             />
-
-            {/* RIGHT COLUMN: ELEMENT INSPECTOR */}
-            {(selectedElement || selectedAudio) && activeRightTab === 'inspector' && (
-              <ElementInspector
-                element={selectedElement}
-                audioTrack={selectedAudio}
-                onUpdateElement={handleUpdateElement}
-                onDeleteElement={handleDeleteElement}
-                onDuplicateElement={handleDuplicateElement}
-                onOpenCharacterStudioForEdit={char => {
-                  setCharacterBeingEdited(char);
-                  setIsCharacterStudioOpen(true);
-                }}
-                onUpdateAudioTrack={handleUpdateAudioTrack}
-                onDeleteAudioTrack={handleDeleteAudioTrack}
-                onClose={handleCloseInspector}
-              />
-            )}
 
           </div>
 
-          {/* Multi-Track Timeline (Screenshot 1) - Anchored at the bottom, spans full width, never moves */}
+          {/* Multi-Track Timeline - Anchored at the bottom, spans full width, never moves */}
           <Timeline
             scenes={scenes}
             activeSceneIndex={activeSceneIndex}
@@ -762,10 +891,13 @@ export default function App() {
             }}
             onAddScene={handleAddScene}
             onDeleteScene={handleDeleteScene}
+            onUpdateScene={handleUpdateScene}
             currentTime={currentTime}
             onSeek={time => setCurrentTime(time)}
             selectedElementId={selectedElementId}
-            onSelectElement={id => setSelectedElementId(id)}
+            onSelectElement={handleSelectElement}
+            selectedAudioId={selectedAudioId}
+            onSelectAudio={handleSelectAudio}
             onUpdateElement={handleUpdateElement}
             onDeleteElement={handleDeleteElement}
             onDuplicateElement={handleDuplicateElement}
@@ -783,6 +915,9 @@ export default function App() {
             canRedo={historyIndex < history.length - 1}
             onInteractionStart={handleInteractionStart}
             onInteractionEnd={handleInteractionEnd}
+            onSplitAtPlayhead={handleSplitAtPlayhead}
+            onOpenProperties={() => setActiveRightTab(activeRightTab === 'inspector' ? null : 'inspector')}
+            isPropertiesOpen={activeRightTab === 'inspector'}
           />
 
         </div>
@@ -792,19 +927,20 @@ export default function App() {
           <RightSidebarRail
             activeTab={activeRightTab}
             onSelectTab={tab => setActiveRightTab(tab)}
-            hasSelectedElement={!!selectedElement}
+            hasSelectedElement={!!(selectedElement || selectedAudio)}
           />
         </div>
 
-        {/* MOBILE FLOATING BACKDROP (Clicking outside closes mobile rails) */}
-        {(isMobileLeftRailOpen || isMobileRightRailOpen) && (
+        {/* MOBILE FLOATING BACKDROP (Clicking outside closes mobile rails or active drawer) */}
+        {(isMobileLeftRailOpen || isMobileRightRailOpen || activeLeftTab || activeRightTab) && (
           <div
             onClick={() => {
               setIsMobileLeftRailOpen(false);
               setIsMobileRightRailOpen(false);
               setActiveLeftTab(null);
+              setActiveRightTab(null);
             }}
-            className="md:hidden absolute inset-0 bg-black/40 z-30 transition-opacity backdrop-blur-xs"
+            className="md:hidden fixed inset-0 bg-black/50 z-40 transition-opacity backdrop-blur-xs"
           />
         )}
 
@@ -828,7 +964,7 @@ export default function App() {
             <RightSidebarRail
               activeTab={activeRightTab}
               onSelectTab={tab => setActiveRightTab(tab)}
-              hasSelectedElement={!!selectedElement}
+              hasSelectedElement={!!(selectedElement || selectedAudio)}
             />
           </div>
         )}
@@ -836,9 +972,7 @@ export default function App() {
         {/* FULL-HEIGHT FLOATING POPUP OVERLAY (Opens on top of both Canvas & Timeline - Canvas & Timeline remain 100% stationary) */}
         {activeLeftTab && activeLeftTab !== 'animIK' && (
           <div
-            className={`absolute left-[68px] top-0 bottom-0 z-50 flex flex-col shadow-[14px_0_40px_rgba(0,0,0,0.22)] border-r border-slate-200 transition-all duration-200 ease-out max-w-[calc(100vw-68px)] ${
-              isMobileLeftRailOpen ? 'flex' : 'hidden md:flex'
-            }`}
+            className="fixed inset-y-0 left-0 z-50 md:absolute md:inset-auto md:left-[68px] md:top-0 md:bottom-0 md:z-30 flex flex-col shadow-2xl border-r border-slate-200 transition-all duration-200 ease-out w-full sm:w-84 md:w-88 max-w-full md:max-w-[calc(100vw-68px)]"
           >
             {/* Character Drawer */}
             {activeLeftTab === 'character' && (
@@ -868,7 +1002,14 @@ export default function App() {
                 onClose={() => setActiveLeftTab(null)}
                 userAssets={userAssets}
                 onAddAsset={asset => setUserAssets(prev => [asset, ...prev])}
-                onDeleteAsset={id => setUserAssets(prev => prev.filter(a => a.id !== id))}
+                onDeleteAsset={handleDeleteAsset}
+                onApplyBackground={url => {
+                  const nextScenes = scenes.map((sc, idx) =>
+                    idx === activeSceneIndex ? { ...sc, background: { type: 'image' as const, value: url } } : sc
+                  );
+                  setScenes(nextScenes);
+                  pushHistorySnapshot(nextScenes);
+                }}
                 onSelectAssetForStage={asset => {
                   handleDropAssetOnStage('media', asset, 50, 50);
                 }}
@@ -893,6 +1034,33 @@ export default function App() {
                 onAddGeneratedAsset={asset => setUserAssets(prev => [asset, ...prev])}
               />
             )}
+          </div>
+        )}
+
+        {/* FULL-HEIGHT FLOATING PROPERTIES DRAWER (Spans entire height, all-device responsive, never cut off by timeline) */}
+        {activeRightTab === 'inspector' && (
+          <div
+            className="fixed inset-y-0 right-0 z-50 md:absolute md:inset-auto md:right-[68px] md:top-0 md:bottom-0 md:z-30 flex flex-col shadow-2xl border-l border-slate-200 transition-all duration-200 ease-out w-full sm:w-88 md:w-96 max-w-full md:max-w-[calc(100vw-68px)] bg-white"
+          >
+            <ElementInspector
+              element={selectedElement}
+              audioTrack={selectedAudio}
+              scene={activeScene}
+              project={project}
+              onUpdateScene={updates => handleUpdateScene(activeSceneIndex, updates)}
+              onSelectElement={handleSelectElement}
+              onSelectAudioTrack={handleSelectAudio}
+              onUpdateElement={handleUpdateElement}
+              onDeleteElement={handleDeleteElement}
+              onDuplicateElement={handleDuplicateElement}
+              onOpenCharacterStudioForEdit={char => {
+                setCharacterBeingEdited(char);
+                setIsCharacterStudioOpen(true);
+              }}
+              onUpdateAudioTrack={handleUpdateAudioTrack}
+              onDeleteAudioTrack={handleDeleteAudioTrack}
+              onClose={handleCloseInspector}
+            />
           </div>
         )}
 

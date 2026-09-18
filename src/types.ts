@@ -126,6 +126,7 @@ export interface StageElement {
   visible?: boolean;
   isBackground?: boolean;
   effectType?: 'sunlight' | 'vignette' | 'glow' | 'rain' | 'dust' | 'fog' | 'cinema';
+  fitMode?: 'cover' | 'contain' | 'fill';
   
   // For character
   characterData?: CharacterModel;
@@ -143,9 +144,10 @@ export interface StageElement {
   bubbleStyle?: 'speech' | 'thought' | 'shout' | 'caption';
   bubbleColor?: string;
   
-  // Animation track timing
+  // Animation track timing & track line position
   startTime: number; // in seconds
   duration: number; // in seconds
+  trackIndex?: number; // Timeline row index (0 = topmost track, 1 = next track down, etc.)
 }
 
 export interface AudioTrackItem {
@@ -159,6 +161,7 @@ export interface AudioTrackItem {
   locked?: boolean;
   visible?: boolean;
   type?: 'voice' | 'music' | 'sfx';
+  trackIndex?: number; // Timeline row index
 }
 
 export interface Scene {
@@ -190,4 +193,17 @@ export interface ExportSettings {
   resolution: '1080p' | '720p' | '480p';
   fps: 24 | 30 | 60;
   quality: 'high' | 'medium' | 'low';
+}
+
+export interface BackgroundAsset {
+  id: string;
+  name: string;
+  url: string;
+  thumbnail?: string;
+  width?: number;
+  height?: number;
+  deleteUrl?: string;
+  imgbbId?: string;
+  createdAt: number;
+  updatedAt?: number;
 }

@@ -200,6 +200,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   const [isTimelineLocked, setIsTimelineLocked] = useState(false);
   const [isMultiSelect, setIsMultiSelect] = useState(false);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+  const [activeMenuTrackIndex, setActiveMenuTrackIndex] = useState<number | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [editingNameValue, setEditingNameValue] = useState('');
@@ -217,6 +218,56 @@ export const Timeline: React.FC<TimelineProps> = ({
     originTrackIdx?: number;
     isHeadToHeadSnapped?: boolean;
   } | null>(null);
+
+  // Active magnetic snap point (when playhead or clip trimming magnetically catches a layer edge)
+  const [activeSnapTime, setActiveSnapTime] = useState<number | null>(null);
+
+  // Collect all magnetic snap points across all layers in the current scene (start and end times)
+  const snapPoints = useMemo(() => {
+    const points = new Set<number>();
+    points.add(0);
+    currentScene.elements.forEach(el => {
+      points.add(Math.round(el.startTime * 1000) / 1000);
+      points.add(Math.round((el.startTime + el.duration) * 1000) / 1000);
+    });
+    (currentScene.audioTracks || []).forEach(at => {
+      points.add(Math.round(at.startTime * 1000) / 1000);
+      points.add(Math.round((at.startTime + at.duration) * 1000) / 1000);
+    });
+    return Array.from(points).sort((a, b) => a - b);
+  }, [currentScene.elements, currentScene.audioTracks]);
+
+  // Check if playhead is magnetically aligned to a layer boundary (from dragging or resting on boundary)
+  const alignedSnapPoint = useMemo(() => {
+    if (activeSnapTime !== null) return activeSnapTime;
+    // Check if currentTime is sitting within 0.035s of any layer boundary
+    const match = snapPoints.find(pt => Math.abs(currentTime - pt) <= 0.035);
+    return match !== undefined ? match : null;
+  }, [activeSnapTime, currentTime, snapPoints]);
+
+  // Helper to find closest snap point within threshold (pixels converted to seconds)
+  const getSnapTime = (rawTime: number, thresholdPx = 14): { snappedTime: number; isSnapped: boolean } => {
+    if (!rulerRef.current || duration <= 0) return { snappedTime: rawTime, isSnapped: false };
+    const rect = rulerRef.current.getBoundingClientRect();
+    const pxPerSec = (rect.width || 1) / (duration || 1);
+    const thresholdSec = Math.max(0.08, thresholdPx / pxPerSec);
+
+    let closestPoint: number | null = null;
+    let minDiff = Infinity;
+
+    for (const pt of snapPoints) {
+      const diff = Math.abs(rawTime - pt);
+      if (diff <= thresholdSec && diff < minDiff) {
+        minDiff = diff;
+        closestPoint = pt;
+      }
+    }
+
+    if (closestPoint !== null) {
+      return { snappedTime: closestPoint, isSnapped: true };
+    }
+    return { snappedTime: rawTime, isSnapped: false };
+  };
 
   // Format timecode (e.g. 00:00)
   const formatTimecode = (seconds: number) => {
@@ -295,6 +346,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       const target = e.target as HTMLElement;
       if (!target.closest('.timeline-menu-container')) {
         setActiveMenuId(null);
+        setActiveMenuTrackIndex(null);
       }
     };
     window.addEventListener('mousedown', handleClickOutside);
@@ -368,14 +420,23 @@ export const Timeline: React.FC<TimelineProps> = ({
     window.addEventListener('touchend', onTouchEnd);
   };
 
-  // Handle Scrubbing on Ruler (Touch & Mouse for ALL devices)
+  // Handle Scrubbing on Ruler & Tracks (Touch & Mouse for ALL devices) with magnetic snap
   const handleRulerPointerDown = (e: React.PointerEvent) => {
     if (!rulerRef.current) return;
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     const rect = rulerRef.current.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
-    const pct = Math.max(0, Math.min(1, clickX / rect.width));
-    onSeek(pct * duration);
+    const rawPct = Math.max(0, Math.min(1, clickX / rect.width));
+    const rawTime = rawPct * duration;
+
+    const { snappedTime, isSnapped } = getSnapTime(rawTime, 14);
+    if (isSnapped) {
+      setActiveSnapTime(snappedTime);
+      onSeek(snappedTime);
+    } else {
+      setActiveSnapTime(null);
+      onSeek(Number(rawTime.toFixed(3)));
+    }
     setIsScrubbing(true);
 
     const target = e.currentTarget as HTMLElement;
@@ -389,7 +450,16 @@ export const Timeline: React.FC<TimelineProps> = ({
       moveEvent.preventDefault();
       const moveX = moveEvent.clientX - rect.left;
       const movePct = Math.max(0, Math.min(1, moveX / rect.width));
-      onSeek(movePct * duration);
+      const moveRawTime = movePct * duration;
+
+      const { snappedTime: moveSnappedTime, isSnapped: moveIsSnapped } = getSnapTime(moveRawTime, 14);
+      if (moveIsSnapped) {
+        setActiveSnapTime(moveSnappedTime);
+        onSeek(moveSnappedTime);
+      } else {
+        setActiveSnapTime(null);
+        onSeek(Number(moveRawTime.toFixed(3)));
+      }
     };
 
     const onPointerUp = (upEvent: PointerEvent) => {
@@ -585,37 +655,9 @@ export const Timeline: React.FC<TimelineProps> = ({
     onInteractionEnd?.();
   };
 
-  // Move an entire track row up or down
+  // Move an entire track row up or down (ensures all split pieces on that track move together)
   const handleMoveTrack = (trackIndex: number, direction: 'up' | 'down') => {
-    const targetIndex = direction === 'up' ? trackIndex - 1 : trackIndex + 1;
-    if (targetIndex < 0 || targetIndex >= unifiedTracks.length) return;
-
-    const currentTrack = unifiedTracks[trackIndex];
-    const otherTrack = unifiedTracks[targetIndex];
-    if (!currentTrack || !otherTrack) return;
-
-    // Swap trackIndex for all clips on both tracks
-    currentTrack.clips.forEach(clip => {
-      if (clip.kind === 'element') {
-        onUpdateElement(clip.id, {
-          trackIndex: otherTrack.trackIndex,
-          zIndex: (unifiedTracks.length - otherTrack.trackIndex) * 10,
-        });
-      } else {
-        onUpdateAudioTrack(clip.id, { trackIndex: otherTrack.trackIndex });
-      }
-    });
-
-    otherTrack.clips.forEach(clip => {
-      if (clip.kind === 'element') {
-        onUpdateElement(clip.id, {
-          trackIndex: currentTrack.trackIndex,
-          zIndex: (unifiedTracks.length - currentTrack.trackIndex) * 10,
-        });
-      } else {
-        onUpdateAudioTrack(clip.id, { trackIndex: currentTrack.trackIndex });
-      }
-    });
+    handleLayerAction(null, direction === 'up' ? 'bringForward' : 'sendBackward', trackIndex);
   };
 
   // Dragging / Trimming Visual Element Clips on Timeline (Touch & Mouse for ALL devices)
@@ -759,8 +801,36 @@ export const Timeline: React.FC<TimelineProps> = ({
       } else if (mode === 'trim-end') {
         // Stretch or shrink from the right edge, capped at MAX_SCENE_DURATION (120s / 2m)
         const maxDur = Math.max(0.2, MAX_SCENE_DURATION - initialStart);
-        const newDur = Math.max(0.2, Math.min(maxDur, initialDuration + deltaSec));
-        const roundedDur = roundTime(newDur);
+        const rawDur = Math.max(0.2, Math.min(maxDur, initialDuration + deltaSec));
+        const proposedEnd = initialStart + rawDur;
+
+        // Snap to other layers' start and end points or playhead
+        let finalDur = rawDur;
+        let isSnapped = false;
+        let snapTime: number | null = null;
+
+        for (const pt of snapPoints) {
+          if (Math.abs(proposedEnd - pt) <= 0.15) {
+            const calculatedDur = Number((pt - initialStart).toFixed(3));
+            if (calculatedDur >= 0.2) {
+              finalDur = calculatedDur;
+              isSnapped = true;
+              snapTime = pt;
+              break;
+            }
+          }
+        }
+        if (!isSnapped && Math.abs(proposedEnd - currentTime) <= 0.15) {
+          const calculatedDur = Number((currentTime - initialStart).toFixed(3));
+          if (calculatedDur >= 0.2) {
+            finalDur = calculatedDur;
+            isSnapped = true;
+            snapTime = currentTime;
+          }
+        }
+
+        const roundedDur = isSnapped ? finalDur : roundTime(finalDur);
+        setActiveSnapTime(snapTime);
         onUpdateElement(el.id, { duration: roundedDur });
         setDraggingFeedback({
           id: el.id,
@@ -769,14 +839,39 @@ export const Timeline: React.FC<TimelineProps> = ({
           mode: 'trim-end',
           startTime: initialStart,
           duration: roundedDur,
+          isHeadToHeadSnapped: isSnapped,
         });
       } else if (mode === 'trim-start') {
         // Stretch or shrink from the left edge
         const proposedStart = Math.max(0, Math.min(initialStart + initialDuration - 0.2, initialStart + deltaSec));
-        const diff = proposedStart - initialStart;
+        let finalStart = proposedStart;
+        let isSnapped = false;
+        let snapTime: number | null = null;
+
+        for (const pt of snapPoints) {
+          if (Math.abs(proposedStart - pt) <= 0.15) {
+            if (pt <= initialStart + initialDuration - 0.2) {
+              finalStart = Number(pt.toFixed(3));
+              isSnapped = true;
+              snapTime = pt;
+              break;
+            }
+          }
+        }
+        if (!isSnapped && Math.abs(proposedStart - currentTime) <= 0.15) {
+          if (currentTime <= initialStart + initialDuration - 0.2) {
+            finalStart = Number(currentTime.toFixed(3));
+            isSnapped = true;
+            snapTime = currentTime;
+          }
+        }
+
+        const diff = finalStart - initialStart;
         const newDur = Math.max(0.2, initialDuration - diff);
-        const roundedStart = roundTime(proposedStart);
-        const roundedDur = roundTime(newDur);
+        const roundedStart = isSnapped ? finalStart : roundTime(finalStart);
+        const roundedDur = isSnapped ? Number(newDur.toFixed(3)) : roundTime(newDur);
+
+        setActiveSnapTime(snapTime);
         onUpdateElement(el.id, {
           startTime: roundedStart,
           duration: roundedDur,
@@ -788,6 +883,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           mode: 'trim-start',
           startTime: roundedStart,
           duration: roundedDur,
+          isHeadToHeadSnapped: isSnapped,
         });
       }
     };
@@ -805,6 +901,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       window.removeEventListener('pointercancel', onPointerUp);
 
       setDraggingFeedback(null);
+      setActiveSnapTime(null);
       if (hasDragged) {
         if (mode === 'move') {
           const finalDeltaY = upEvent.clientY - startClientY;
@@ -969,8 +1066,35 @@ export const Timeline: React.FC<TimelineProps> = ({
       } else if (mode === 'trim-end') {
         // Stretch or shrink from the right edge, capped at MAX_SCENE_DURATION (120s / 2m)
         const maxDur = Math.max(0.2, MAX_SCENE_DURATION - initialStart);
-        const newDur = Math.max(0.2, Math.min(maxDur, initialDuration + deltaSec));
-        const roundedDur = roundTime(newDur);
+        const rawDur = Math.max(0.2, Math.min(maxDur, initialDuration + deltaSec));
+        const proposedEnd = initialStart + rawDur;
+
+        let finalDur = rawDur;
+        let isSnapped = false;
+        let snapTime: number | null = null;
+
+        for (const pt of snapPoints) {
+          if (Math.abs(proposedEnd - pt) <= 0.15) {
+            const calculatedDur = Number((pt - initialStart).toFixed(3));
+            if (calculatedDur >= 0.2) {
+              finalDur = calculatedDur;
+              isSnapped = true;
+              snapTime = pt;
+              break;
+            }
+          }
+        }
+        if (!isSnapped && Math.abs(proposedEnd - currentTime) <= 0.15) {
+          const calculatedDur = Number((currentTime - initialStart).toFixed(3));
+          if (calculatedDur >= 0.2) {
+            finalDur = calculatedDur;
+            isSnapped = true;
+            snapTime = currentTime;
+          }
+        }
+
+        const roundedDur = isSnapped ? finalDur : roundTime(finalDur);
+        setActiveSnapTime(snapTime);
         onUpdateAudioTrack(track.id, { duration: roundedDur });
         setDraggingFeedback({
           id: track.id,
@@ -979,14 +1103,39 @@ export const Timeline: React.FC<TimelineProps> = ({
           mode: 'trim-end',
           startTime: initialStart,
           duration: roundedDur,
+          isHeadToHeadSnapped: isSnapped,
         });
       } else if (mode === 'trim-start') {
         // Stretch or shrink from the left edge
         const proposedStart = Math.max(0, Math.min(initialStart + initialDuration - 0.2, initialStart + deltaSec));
-        const diff = proposedStart - initialStart;
+        let finalStart = proposedStart;
+        let isSnapped = false;
+        let snapTime: number | null = null;
+
+        for (const pt of snapPoints) {
+          if (Math.abs(proposedStart - pt) <= 0.15) {
+            if (pt <= initialStart + initialDuration - 0.2) {
+              finalStart = Number(pt.toFixed(3));
+              isSnapped = true;
+              snapTime = pt;
+              break;
+            }
+          }
+        }
+        if (!isSnapped && Math.abs(proposedStart - currentTime) <= 0.15) {
+          if (currentTime <= initialStart + initialDuration - 0.2) {
+            finalStart = Number(currentTime.toFixed(3));
+            isSnapped = true;
+            snapTime = currentTime;
+          }
+        }
+
+        const diff = finalStart - initialStart;
         const newDur = Math.max(0.2, initialDuration - diff);
-        const roundedStart = roundTime(proposedStart);
-        const roundedDur = roundTime(newDur);
+        const roundedStart = isSnapped ? finalStart : roundTime(finalStart);
+        const roundedDur = isSnapped ? Number(newDur.toFixed(3)) : roundTime(newDur);
+
+        setActiveSnapTime(snapTime);
         onUpdateAudioTrack(track.id, {
           startTime: roundedStart,
           duration: roundedDur,
@@ -998,6 +1147,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           mode: 'trim-start',
           startTime: roundedStart,
           duration: roundedDur,
+          isHeadToHeadSnapped: isSnapped,
         });
       }
     };
@@ -1015,6 +1165,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       window.removeEventListener('pointercancel', onPointerUp);
 
       setDraggingFeedback(null);
+      setActiveSnapTime(null);
       if (hasDragged) {
         if (mode === 'move') {
           const finalDeltaY = upEvent.clientY - startClientY;
@@ -1040,9 +1191,9 @@ export const Timeline: React.FC<TimelineProps> = ({
     window.addEventListener('pointercancel', onPointerUp);
   };
 
-  // Layer Reordering Handlers (Supports track moving, front/back, duplicate, delete)
+  // Layer Reordering Handlers (Supports moving entire track line with all split pieces, front/back, duplicate, delete)
   const handleLayerAction = (
-    id: string,
+    id: string | null,
     action:
       | 'bringToFront'
       | 'sendToBack'
@@ -1053,21 +1204,11 @@ export const Timeline: React.FC<TimelineProps> = ({
       | 'moveToNewTrackAbove'
       | 'moveToNewTrackBelow'
       | 'split'
-      | 'delete'
+      | 'delete',
+    explicitTrackIdx?: number
   ) => {
     setActiveMenuId(null);
-
-    const isAudio = currentScene.audioTracks?.some(tr => tr.id === id);
-
-    // If deleting
-    if (action === 'delete') {
-      if (isAudio) {
-        onDeleteAudioTrack(id);
-      } else {
-        onDeleteElement(id);
-      }
-      return;
-    }
+    setActiveMenuTrackIndex(null);
 
     // If splitting
     if (action === 'split') {
@@ -1075,61 +1216,78 @@ export const Timeline: React.FC<TimelineProps> = ({
       return;
     }
 
-    // Find current clip and its track row in unifiedTracks
-    const targetTrackIdx = unifiedTracks.findIndex(t => t.clips.some(c => c.id === id));
+    // Find current track row in unifiedTracks
+    let targetTrackIdx =
+      explicitTrackIdx !== undefined && explicitTrackIdx >= 0 && explicitTrackIdx < unifiedTracks.length
+        ? explicitTrackIdx
+        : -1;
+
+    if (targetTrackIdx === -1 && id) {
+      targetTrackIdx = unifiedTracks.findIndex(t => t.clips.some(c => c.id === id));
+    }
     if (targetTrackIdx === -1) return;
 
     const targetTrack = unifiedTracks[targetTrackIdx];
-    const targetClip = targetTrack.clips.find(c => c.id === id);
-    if (!targetClip) return;
+    if (!targetTrack) return;
 
-    let newTracks: { clips: UnifiedClipItem[] }[] = unifiedTracks.map(t => ({
+    // If deleting, delete all clips on this entire track row (all split parts)
+    if (action === 'delete') {
+      targetTrack.clips.forEach(clip => {
+        if (clip.kind === 'element') {
+          onDeleteElement(clip.id);
+        } else {
+          onDeleteAudioTrack(clip.id);
+        }
+      });
+      return;
+    }
+
+    let newTracks: UnifiedTrackItem[] = unifiedTracks.map(t => ({
+      ...t,
       clips: [...t.clips],
     }));
 
     if (action === 'bringToFront') {
-      // Move clip to its own track at the very top (Row 0)
-      newTracks[targetTrackIdx].clips = newTracks[targetTrackIdx].clips.filter(c => c.id !== id);
-      newTracks = newTracks.filter(t => t.clips.length > 0);
-      newTracks.unshift({ clips: [targetClip] });
+      // Move entire track row (all split pieces) to the very top (Row 0, highest z-index)
+      const [movingTrack] = newTracks.splice(targetTrackIdx, 1);
+      if (movingTrack) {
+        newTracks.unshift(movingTrack);
+      }
     } else if (action === 'sendToBack') {
-      // Move clip to its own track at the very bottom (Last Row)
-      newTracks[targetTrackIdx].clips = newTracks[targetTrackIdx].clips.filter(c => c.id !== id);
-      newTracks = newTracks.filter(t => t.clips.length > 0);
-      newTracks.push({ clips: [targetClip] });
+      // Move entire track row (all split pieces) to the very bottom (last row, lowest z-index)
+      const [movingTrack] = newTracks.splice(targetTrackIdx, 1);
+      if (movingTrack) {
+        newTracks.push(movingTrack);
+      }
     } else if (action === 'bringForward' || action === 'moveTrackUp') {
-      if (targetTrack.clips.length > 1) {
-        newTracks[targetTrackIdx].clips = newTracks[targetTrackIdx].clips.filter(c => c.id !== id);
-        const insertIdx = Math.max(0, targetTrackIdx);
-        newTracks.splice(insertIdx, 0, { clips: [targetClip] });
-      } else if (targetTrackIdx > 0) {
+      // Move entire track row up 1 position (swap with track above)
+      if (targetTrackIdx > 0) {
         const temp = newTracks[targetTrackIdx];
         newTracks[targetTrackIdx] = newTracks[targetTrackIdx - 1];
         newTracks[targetTrackIdx - 1] = temp;
       }
     } else if (action === 'sendBackward' || action === 'moveTrackDown') {
-      if (targetTrack.clips.length > 1) {
-        newTracks[targetTrackIdx].clips = newTracks[targetTrackIdx].clips.filter(c => c.id !== id);
-        const insertIdx = Math.min(newTracks.length, targetTrackIdx + 1);
-        newTracks.splice(insertIdx, 0, { clips: [targetClip] });
-      } else if (targetTrackIdx < newTracks.length - 1) {
+      // Move entire track row down 1 position (swap with track below)
+      if (targetTrackIdx < newTracks.length - 1) {
         const temp = newTracks[targetTrackIdx];
         newTracks[targetTrackIdx] = newTracks[targetTrackIdx + 1];
         newTracks[targetTrackIdx + 1] = temp;
       }
     } else if (action === 'moveToNewTrackAbove') {
-      newTracks[targetTrackIdx].clips = newTracks[targetTrackIdx].clips.filter(c => c.id !== id);
-      newTracks = newTracks.filter(t => t.clips.length > 0);
-      const insertIdx = Math.max(0, targetTrackIdx);
-      newTracks.splice(insertIdx, 0, { clips: [targetClip] });
+      // Move entire track row above the previous track
+      if (targetTrackIdx > 0) {
+        const [movingTrack] = newTracks.splice(targetTrackIdx, 1);
+        newTracks.splice(targetTrackIdx - 1, 0, movingTrack);
+      }
     } else if (action === 'moveToNewTrackBelow') {
-      newTracks[targetTrackIdx].clips = newTracks[targetTrackIdx].clips.filter(c => c.id !== id);
-      newTracks = newTracks.filter(t => t.clips.length > 0);
-      const insertIdx = Math.min(newTracks.length, targetTrackIdx + 1);
-      newTracks.splice(insertIdx, 0, { clips: [targetClip] });
+      // Move entire track row below the next track
+      if (targetTrackIdx < newTracks.length - 1) {
+        const [movingTrack] = newTracks.splice(targetTrackIdx, 1);
+        newTracks.splice(targetTrackIdx + 1, 0, movingTrack);
+      }
     }
 
-    // Now update trackIndex and zIndex for all elements and audio tracks
+    // Now update trackIndex and zIndex for all elements and audio tracks across all tracks
     const updatedElements = [...currentScene.elements];
     const updatedAudio = [...(currentScene.audioTracks || [])];
 
@@ -1178,6 +1336,24 @@ export const Timeline: React.FC<TimelineProps> = ({
 
     let targetElement = currentScene.elements.find(el => el.id === selectedElementId);
     let targetAudio = currentScene.audioTracks?.find(at => at.id === selectedAudioId);
+
+    // If selected element ends or starts right at currentTime, search for another element spanning currentTime
+    if (targetElement && (currentTime <= targetElement.startTime + 0.05 || currentTime >= targetElement.startTime + targetElement.duration - 0.05)) {
+      const spanningElement = currentScene.elements.find(
+        el => el.id !== targetElement?.id && currentTime > el.startTime + 0.05 && currentTime < el.startTime + el.duration - 0.05
+      );
+      if (spanningElement) {
+        targetElement = spanningElement;
+      } else {
+        const spanningAudio = currentScene.audioTracks?.find(
+          at => currentTime > at.startTime + 0.05 && currentTime < at.startTime + at.duration - 0.05
+        );
+        if (spanningAudio) {
+          targetElement = undefined;
+          targetAudio = spanningAudio;
+        }
+      }
+    }
 
     // If neither is explicitly selected, find an element or audio track under the red playhead
     if (!targetElement && !targetAudio) {
@@ -1342,17 +1518,16 @@ export const Timeline: React.FC<TimelineProps> = ({
   const selectedElement = currentScene.elements.find(el => el.id === selectedElementId);
   const selectedAudio = currentScene.audioTracks?.find(at => at.id === selectedAudioId);
 
-  const activeClipForSplit =
-    selectedElement ||
-    selectedAudio ||
-    currentScene.elements.find(el => currentTime > el.startTime + 0.05 && currentTime < el.startTime + el.duration - 0.05) ||
-    currentScene.audioTracks?.find(at => currentTime > at.startTime + 0.05 && currentTime < at.startTime + at.duration - 0.05);
+  const isClipSplittable = (c: { startTime: number; duration: number } | null | undefined) =>
+    Boolean(c && currentTime > c.startTime + 0.05 && currentTime < c.startTime + c.duration - 0.05);
 
-  const canSplit = Boolean(
-    activeClipForSplit &&
-    currentTime > activeClipForSplit.startTime + 0.05 &&
-    currentTime < activeClipForSplit.startTime + activeClipForSplit.duration - 0.05
-  );
+  const activeClipForSplit =
+    (isClipSplittable(selectedElement) ? selectedElement : null) ||
+    (isClipSplittable(selectedAudio) ? selectedAudio : null) ||
+    currentScene.elements.find(el => isClipSplittable(el)) ||
+    currentScene.audioTracks?.find(at => isClipSplittable(at));
+
+  const canSplit = Boolean(activeClipForSplit);
 
   const playheadPercent = Math.max(0, Math.min(100, (currentTime / duration) * 100));
 
@@ -1363,16 +1538,8 @@ export const Timeline: React.FC<TimelineProps> = ({
       }`}
     >
       {/* 1. SCENE TABS BAR (Screenshot 5: Scene1 [ ⋮ ] + New Scene) */}
-      <div className={`h-8 bg-[#181d28] px-3 flex items-center justify-between text-xs shrink-0 ${!isCollapsed ? 'border-b border-[#242b3a]' : ''}`}>
+      <div className={`h-8 bg-[#181d28] px-2 sm:px-3 flex items-center justify-between text-xs shrink-0 ${!isCollapsed ? 'border-b border-[#242b3a]' : ''}`}>
         <div className="flex items-center space-x-1.5 overflow-x-auto no-scrollbar">
-          <button
-            onClick={() => onSelectScene(Math.max(0, activeSceneIndex - 1))}
-            disabled={activeSceneIndex === 0}
-            className="hidden sm:inline-flex p-1 text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer transition-colors"
-          >
-            <ChevronLeft className="w-3.5 h-3.5" />
-          </button>
-
           {/* LAYER HEADERS TOGGLE (Stacked Layers icon from user - Click to hide/show the left layer-headers panel) */}
           <button
             onClick={() => setIsLayerHeadersVisible(!isLayerHeadersVisible)}
@@ -1394,22 +1561,15 @@ export const Timeline: React.FC<TimelineProps> = ({
                 key={sc.id}
                 onClick={() => onSelectScene(idx)}
                 title={`${sc.name || `Scene ${idx + 1}`} (${sc.duration}s)`}
-                className={`flex items-center justify-center space-x-1 px-2 py-1 sm:px-3 rounded text-xs font-semibold transition-all cursor-pointer border ${
+                className={`flex items-center justify-center space-x-1 px-2 py-1 sm:px-3 rounded text-xs font-semibold transition-all cursor-pointer border shrink-0 ${
                   isActive
                     ? `${colorTheme.active} scale-105 shadow-sm`
                     : `${colorTheme.inactive}`
                 }`}
               >
-                {/* On mobile: ONLY 🖼️ icon, no text or numbers (1, 2) */}
-                <span className="sm:hidden text-sm leading-none select-none">
-                  🖼️
-                </span>
-
-                {/* On desktop: 🖼️ icon + Scene Name + Duration */}
-                <div className="hidden sm:flex items-center space-x-1.5">
+                <div className="flex items-center space-x-1 sm:space-x-1.5">
                   <span className="text-xs leading-none">🖼️</span>
-                  <span>{sc.name || `Scene ${idx + 1}`}</span>
-                  <span className="text-[10px] font-mono opacity-75">({sc.duration}s)</span>
+                  <span className="whitespace-nowrap">{sc.name || `Scene ${idx + 1}`}</span>
                 </div>
 
                 {scenes.length > 1 && (
@@ -1418,7 +1578,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                       e.stopPropagation();
                       onDeleteScene(idx);
                     }}
-                    className="hidden sm:inline-flex p-0.5 text-slate-400 hover:text-red-400 rounded cursor-pointer ml-1"
+                    className="inline-flex p-0.5 text-slate-400 hover:text-red-400 rounded cursor-pointer ml-1"
                     title="Delete Scene"
                   >
                     <Trash2 className="w-2.5 h-2.5" />
@@ -1431,56 +1591,10 @@ export const Timeline: React.FC<TimelineProps> = ({
           {/* + New Scene Button */}
           <button
             onClick={onAddScene}
-            title="Add New Scene (Max 2m per scene)"
-            className="flex items-center justify-center p-1.5 bg-[#1c222e] hover:bg-[#252c3b] text-slate-300 rounded border border-[#2e3748] transition-colors cursor-pointer active:scale-95"
+            title="Add New Scene"
+            className="flex items-center justify-center p-1.5 bg-[#1c222e] hover:bg-[#252c3b] text-slate-300 rounded border border-[#2e3748] transition-colors cursor-pointer active:scale-95 shrink-0"
           >
             <Plus className="w-3.5 h-3.5 text-blue-400" />
-          </button>
-
-          {/* Active Scene Duration (Max 120s / 2m per scene) */}
-          <div className="hidden sm:flex items-center space-x-1 px-2 py-0.5 bg-[#121622] rounded border border-[#2e3748] text-xs text-slate-300 select-none">
-            <span className="text-[11px] text-slate-400 font-medium">Duration:</span>
-            <button
-              onClick={() => onUpdateScene?.(activeSceneIndex, { duration: Math.max(1, currentScene.duration - 5) })}
-              className="px-1 py-0.5 hover:bg-[#222a3a] rounded text-slate-300 hover:text-white cursor-pointer"
-              title="Decrease Scene Duration -5s"
-            >
-              -5s
-            </button>
-            <input
-              type="number"
-              min={1}
-              max={120}
-              value={currentScene.duration}
-              onChange={e => {
-                const val = parseInt(e.target.value);
-                if (!isNaN(val)) {
-                  onUpdateScene?.(activeSceneIndex, { duration: Math.max(1, Math.min(120, val)) });
-                }
-              }}
-              className="w-10 bg-[#0d1017] border border-slate-700 text-center font-mono font-bold text-amber-300 rounded px-1 py-0.5 text-xs outline-none focus:border-amber-400"
-              title="Current scene duration in seconds (Max 120s / 2m)"
-            />
-            <span className="font-mono text-xs text-slate-400">s</span>
-            <button
-              onClick={() => onUpdateScene?.(activeSceneIndex, { duration: Math.min(120, currentScene.duration + 5) })}
-              disabled={currentScene.duration >= 120}
-              className="px-1 py-0.5 hover:bg-[#222a3a] rounded text-slate-300 hover:text-white disabled:opacity-30 cursor-pointer"
-              title="Increase Scene Duration +5s (Max 120s / 2m)"
-            >
-              +5s
-            </button>
-            <span className="text-[10px] text-amber-400/80 font-mono pl-1 border-l border-slate-700" title="Max 2 minutes per scene. Add a new scene for more.">
-              max 2m
-            </span>
-          </div>
-
-          <button
-            onClick={() => onSelectScene(Math.min(scenes.length - 1, activeSceneIndex + 1))}
-            disabled={activeSceneIndex === scenes.length - 1}
-            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer transition-colors"
-          >
-            <ChevronRight className="w-3.5 h-3.5" />
           </button>
         </div>
 
@@ -1544,14 +1658,31 @@ export const Timeline: React.FC<TimelineProps> = ({
               className={`p-1.5 rounded cursor-pointer transition-all flex items-center space-x-1 ${
                 isPropertiesOpen
                   ? 'bg-blue-600 text-white shadow-xs font-semibold'
-                  : (selectedElementId || selectedAudioId)
-                    ? 'bg-blue-600/20 text-blue-300 hover:bg-blue-600/40 border border-blue-500/40'
-                    : 'hover:text-white hover:bg-[#202634] text-slate-400'
+                  : 'hover:text-white hover:bg-[#202634] text-slate-400'
               }`}
               title="Toggle Properties Panel"
             >
               <Sliders className="w-3.5 h-3.5 text-blue-400" />
               <span className="text-[10px] font-medium hidden sm:inline">Properties</span>
+            </button>
+
+            {/* Split Layer at Playhead */}
+            <button
+              onClick={handleSplitSelected}
+              disabled={!canSplit}
+              className={`p-1.5 rounded cursor-pointer transition-all flex items-center space-x-1 ${
+                canSplit
+                  ? 'bg-amber-600/30 text-amber-300 hover:bg-amber-600/50 border border-amber-500/40 font-semibold'
+                  : 'opacity-40 text-slate-500 cursor-not-allowed'
+              }`}
+              title={
+                canSplit
+                  ? `Split layer at red playhead line (${currentTime.toFixed(2)}s)`
+                  : 'Move red playhead over a layer to split'
+              }
+            >
+              <Scissors className="w-3.5 h-3.5" />
+              <span className="text-[10px] hidden sm:inline font-semibold">Split</span>
             </button>
 
             {/* Quick Scroll to Timeline Start (00:00) */}
@@ -1649,63 +1780,6 @@ export const Timeline: React.FC<TimelineProps> = ({
             </button>
           </div>
 
-          {/* Quick timing fine-tune bar for selected element or audio track (hidden on mobile, visible on desktop/tablet) */}
-          {(selectedElement || selectedAudio) && (
-            <div className="hidden sm:flex items-center space-x-1 bg-[#10141c] px-1.5 py-0.5 rounded border border-blue-500/40 text-[11px] text-blue-200 shrink-0 select-none">
-              <span className="font-semibold text-white truncate max-w-[60px] sm:max-w-[90px]">
-                {selectedElement?.name || selectedAudio?.name}
-              </span>
-              <div className="w-px h-3 bg-slate-700 mx-0.5" />
-              <span className="text-[10px] text-slate-400 hidden sm:inline">Move:</span>
-              <button
-                type="button"
-                onClick={() => {
-                  if (selectedElement) onUpdateElement(selectedElement.id, { startTime: Math.max(0, Math.round((selectedElement.startTime - 0.5) * 10) / 10) });
-                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { startTime: Math.max(0, Math.round((selectedAudio.startTime - 0.5) * 10) / 10) });
-                }}
-                className="px-1 py-0.5 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer font-mono"
-                title="Nudge Left 0.5s"
-              >
-                ◀ -0.5s
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (selectedElement) onUpdateElement(selectedElement.id, { startTime: Math.min(MAX_SCENE_DURATION - selectedElement.duration, Math.round((selectedElement.startTime + 0.5) * 10) / 10) });
-                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { startTime: Math.min(MAX_SCENE_DURATION - selectedAudio.duration, Math.round((selectedAudio.startTime + 0.5) * 10) / 10) });
-                }}
-                className="px-1 py-0.5 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer font-mono"
-                title="Nudge Right 0.5s"
-              >
-                +0.5s ▶
-              </button>
-              <div className="w-px h-3 bg-slate-700 mx-0.5" />
-              <span className="text-[10px] text-slate-400 hidden sm:inline">Length:</span>
-              <button
-                type="button"
-                onClick={() => {
-                  if (selectedElement) onUpdateElement(selectedElement.id, { duration: Math.max(0.2, Math.round((selectedElement.duration - 0.5) * 10) / 10) });
-                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { duration: Math.max(0.2, Math.round((selectedAudio.duration - 0.5) * 10) / 10) });
-                }}
-                className="px-1 py-0.5 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer font-mono"
-                title="Shorten Duration -0.5s"
-              >
-                -0.5s
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (selectedElement) onUpdateElement(selectedElement.id, { duration: Math.min(MAX_SCENE_DURATION - selectedElement.startTime, Math.round((selectedElement.duration + 0.5) * 10) / 10) });
-                  if (selectedAudio) onUpdateAudioTrack(selectedAudio.id, { duration: Math.min(MAX_SCENE_DURATION - selectedAudio.startTime, Math.round((selectedAudio.duration + 0.5) * 10) / 10) });
-                }}
-                className="px-1 py-0.5 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer font-mono"
-                title="Lengthen Duration +0.5s (Max 120s / 2m)"
-              >
-                +0.5s
-              </button>
-            </div>
-          )}
-
           {/* Right Tools: Undo & Redo (safely inside screen on mobile) */}
           <div className="flex items-center space-x-0.5 sm:space-x-1 text-slate-300 shrink-0">
             <button
@@ -1766,10 +1840,10 @@ export const Timeline: React.FC<TimelineProps> = ({
               />
             )}
             {/* TIME RULER (Sticky to top with sticky left corner) */}
-            <div className="h-6 bg-[#161a24] border-b border-[#222834] flex items-center sticky top-0 z-30 select-none shrink-0">
+            <div className="h-6 bg-[#161a24] border-b border-[#222834] flex items-center sticky top-0 z-40 select-none shrink-0">
               {/* Left Header Corner (Screenshot 5: v84.2.5 Layers) - Hides to the left when isLayerHeadersVisible is false */}
               <div
-                className={`transition-all duration-200 shrink-0 bg-[#181d28] h-full sticky left-0 z-40 flex items-center justify-between text-[10px] font-mono text-slate-400 ${
+                className={`transition-all duration-200 shrink-0 bg-[#181d28] h-full sticky left-0 z-50 flex items-center justify-between text-[10px] font-mono text-slate-400 ${
                   isLayerHeadersVisible
                     ? 'w-40 sm:w-44 px-3 border-r border-[#222834] opacity-100'
                     : 'w-0 max-w-0 p-0 overflow-hidden border-r-0 opacity-0 pointer-events-none'
@@ -1802,12 +1876,31 @@ export const Timeline: React.FC<TimelineProps> = ({
                   );
                 })}
 
+                {/* White Magnetic Snap Guide Line in Ruler */}
+                {alignedSnapPoint !== null && (
+                  <div
+                    className="absolute top-0 bottom-0 w-0.5 bg-white z-50 pointer-events-none shadow-[0_0_10px_rgba(255,255,255,1)]"
+                    style={{ left: `${(alignedSnapPoint / duration) * 100}%` }}
+                  >
+                    <div className="absolute -top-0.5 left-1/2 -translate-x-1/2 bg-white text-slate-950 font-mono text-[9px] font-black px-1.5 py-0.5 rounded-full shadow-xl border border-slate-300 flex items-center space-x-1 whitespace-nowrap z-50">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping inline-block mr-0.5" />
+                      <span>Align {alignedSnapPoint.toFixed(2)}s</span>
+                    </div>
+                  </div>
+                )}
+
                 {/* Red Draggable Playhead Pin */}
                 <div
-                  className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-40 pointer-events-none"
+                  className={`absolute top-0 bottom-0 w-0.5 bg-red-500 z-40 pointer-events-none ${
+                    alignedSnapPoint !== null ? 'ring-2 ring-white shadow-[0_0_12px_rgba(255,255,255,1)]' : ''
+                  }`}
                   style={{ left: `${playheadPercent}%` }}
                 >
-                  <div className="w-3 h-3 bg-red-500 -ml-1.5 -top-1 rotate-45 shadow-md" />
+                  <div
+                    className={`w-3 h-3 bg-red-500 -ml-1.5 -top-1 rotate-45 shadow-md ${
+                      alignedSnapPoint !== null ? 'ring-2 ring-white bg-red-400' : ''
+                    }`}
+                  />
                 </div>
               </div>
             </div>
@@ -1861,7 +1954,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                   >
                     {/* LEFT TRACK HEADER - Collapsible, with Move Up/Down, 3-Dots, Name, Lock, Eye, Delete */}
                     <div
-                      className={`transition-all duration-200 shrink-0 bg-[#181d28] h-full sticky left-0 z-20 flex items-center justify-between text-xs font-medium ${
+                      className={`transition-all duration-200 shrink-0 bg-[#181d28] h-full sticky left-0 z-30 flex items-center justify-between text-xs font-medium ${
                         isLayerHeadersVisible
                           ? 'w-40 sm:w-44 px-2 border-r border-[#222834] opacity-100'
                           : 'w-0 max-w-0 p-0 overflow-hidden border-r-0 opacity-0 pointer-events-none'
@@ -1875,6 +1968,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                             const rect = e.currentTarget.getBoundingClientRect();
                             setMenuPosition({ top: rect.bottom + 4, left: rect.left });
                             setActiveMenuId(track.clips[0]?.id || null);
+                            setActiveMenuTrackIndex(trackIdx);
                           }}
                           className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-700/50 cursor-pointer shrink-0"
                           title="Layer Options"
@@ -1911,6 +2005,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                         {/* Track Type Icon */}
                         {isAudioTrack ? (
                           <Music className="w-3 h-3 text-lime-400 shrink-0" />
+                        ) : track.clips[0]?.element?.type === 'camera' ? (
+                          <Camera className="w-3 h-3 text-red-400 shrink-0" />
                         ) : track.clips[0]?.element?.type === 'character' ? (
                           <User className="w-3 h-3 text-blue-400 shrink-0" />
                         ) : track.clips[0]?.element?.type === 'effect' ? (
@@ -2013,7 +2109,14 @@ export const Timeline: React.FC<TimelineProps> = ({
                     </div>
 
                     {/* RIGHT TRACK LANE: Clips, Head-to-Head Connector, Red Playhead */}
-                    <div className="flex-1 h-full relative">
+                    <div
+                      onPointerDown={e => {
+                        if (e.target === e.currentTarget) {
+                          handleRulerPointerDown(e);
+                        }
+                      }}
+                      className="flex-1 h-full relative cursor-pointer z-10"
+                    >
                       {/* Background Ticks */}
                       {timelineTicks.map((t, idx) => (
                         <div
@@ -2077,7 +2180,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                               {!isLocked && (
                                 <div
                                   onPointerDown={e => handleAudioClipPointerDown(e, clip.audio!, 'trim-start')}
-                                  className="w-3 h-full absolute left-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 text-white/80 touch-none z-30"
+                                  className="w-3 h-full absolute left-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 text-white/80 touch-none z-20"
                                   style={{ touchAction: 'none' }}
                                   title="Trim start"
                                 >
@@ -2103,7 +2206,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                               {!isLocked && (
                                 <div
                                   onPointerDown={e => handleAudioClipPointerDown(e, clip.audio!, 'trim-end')}
-                                  className="w-3 h-full absolute right-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 text-white/80 touch-none z-30"
+                                  className="w-3 h-full absolute right-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 text-white/80 touch-none z-20"
                                   style={{ touchAction: 'none' }}
                                   title="Trim end"
                                 >
@@ -2133,7 +2236,10 @@ export const Timeline: React.FC<TimelineProps> = ({
                         let clipColor = 'bg-blue-600 text-white';
                         let IconComp = User;
 
-                        if (el.type === 'effect') {
+                        if (el.type === 'camera') {
+                          clipColor = 'bg-red-600 text-white border border-red-400/80 shadow-xs';
+                          IconComp = Camera;
+                        } else if (el.type === 'effect') {
                           clipColor = 'bg-[#333d4f] text-slate-200 border border-slate-600/40';
                           IconComp = Sparkles;
                         } else if (el.type === 'character') {
@@ -2143,7 +2249,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                           clipColor = 'bg-[#3f6212] text-lime-100 border border-lime-800/40';
                           IconComp = ImageIcon;
                         } else if (el.type === 'image') {
-                          clipColor = 'bg-[#15803d] text-emerald-100';
+                          const isGif = el.name.toLowerCase().endsWith('.gif') || (el.mediaUrl && (el.mediaUrl.toLowerCase().includes('.gif') || el.mediaUrl.includes('data:image/gif')));
+                          clipColor = isGif ? 'bg-[#0f766e] text-teal-100 border border-teal-500/40' : 'bg-[#15803d] text-emerald-100';
                           IconComp = ImageIcon;
                         } else if (el.type === 'speechBubble' || el.type === 'text') {
                           clipColor = 'bg-[#b45309] text-amber-100';
@@ -2188,7 +2295,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                             {!isLocked && (
                               <div
                                 onPointerDown={e => handleClipPointerDown(e, el, 'trim-start')}
-                                className="w-3 h-full absolute left-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 text-white/80 touch-none z-30"
+                                className="w-3 h-full absolute left-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 text-white/80 touch-none z-20"
                                 style={{ touchAction: 'none' }}
                                 title="Trim start"
                               >
@@ -2199,13 +2306,18 @@ export const Timeline: React.FC<TimelineProps> = ({
                             <div className="flex items-center space-x-1.5 truncate px-2.5">
                               <IconComp className="w-3 h-3 shrink-0 opacity-85" />
                               <span className="truncate text-[11px] select-none">{clip.name}</span>
+                              {el.type === 'image' && (el.name.toLowerCase().endsWith('.gif') || (el.mediaUrl && (el.mediaUrl.toLowerCase().includes('.gif') || el.mediaUrl.includes('data:image/gif')))) && (
+                                <span className="text-[9px] px-1 py-0.2 bg-teal-900/80 text-teal-200 font-bold rounded shrink-0 border border-teal-400/40">
+                                  GIF
+                                </span>
+                              )}
                             </div>
 
                             {/* Right Trim Handle */}
                             {!isLocked && (
                               <div
                                 onPointerDown={e => handleClipPointerDown(e, el, 'trim-end')}
-                                className="w-3 h-full absolute right-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 text-white/80 touch-none z-30"
+                                className="w-3 h-full absolute right-0 top-0 cursor-ew-resize flex items-center justify-center hover:bg-white/40 text-white/80 touch-none z-20"
                                 style={{ touchAction: 'none' }}
                                 title="Trim end"
                               >
@@ -2277,9 +2389,21 @@ export const Timeline: React.FC<TimelineProps> = ({
                         );
                       })}
 
+                      {/* White Magnetic Snap Guide Line (Exact Layer Alignment) */}
+                      {alignedSnapPoint !== null && (
+                        <div
+                          className="absolute top-0 bottom-0 w-0.5 bg-white pointer-events-none z-30 shadow-[0_0_8px_rgba(255,255,255,1)]"
+                          style={{ left: `${(alignedSnapPoint / duration) * 100}%` }}
+                        />
+                      )}
+
                       {/* Red Playhead Guide Line */}
                       <div
-                        className="absolute top-0 bottom-0 w-0.5 bg-red-500/50 pointer-events-none z-30"
+                        className={`absolute top-0 bottom-0 w-0.5 pointer-events-none z-30 transition-colors ${
+                          alignedSnapPoint !== null
+                            ? 'bg-red-500 ring-1 ring-white shadow-[0_0_8px_rgba(255,255,255,0.9)]'
+                            : 'bg-red-500/50'
+                        }`}
                         style={{ left: `${playheadPercent}%` }}
                       />
                     </div>
@@ -2330,7 +2454,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               }}
             >
               <button
-                onClick={() => handleLayerAction(activeMenuId, 'moveToNewTrackAbove')}
+                onClick={() => handleLayerAction(activeMenuId, 'moveToNewTrackAbove', activeMenuTrackIndex ?? undefined)}
                 className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer text-blue-300"
               >
                 <ArrowUpToLine className="w-3.5 h-3.5 text-blue-400" />
@@ -2338,7 +2462,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               </button>
 
               <button
-                onClick={() => handleLayerAction(activeMenuId, 'moveToNewTrackBelow')}
+                onClick={() => handleLayerAction(activeMenuId, 'moveToNewTrackBelow', activeMenuTrackIndex ?? undefined)}
                 className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer text-indigo-300"
               >
                 <ArrowDownToLine className="w-3.5 h-3.5 text-indigo-400" />
@@ -2348,7 +2472,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               <div className="h-px bg-slate-700/60 my-1" />
 
               <button
-                onClick={() => handleLayerAction(activeMenuId, 'bringToFront')}
+                onClick={() => handleLayerAction(activeMenuId, 'bringToFront', activeMenuTrackIndex ?? undefined)}
                 className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer"
               >
                 <ChevronsUp className="w-3.5 h-3.5 text-blue-400" />
@@ -2356,7 +2480,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               </button>
 
               <button
-                onClick={() => handleLayerAction(activeMenuId, 'sendToBack')}
+                onClick={() => handleLayerAction(activeMenuId, 'sendToBack', activeMenuTrackIndex ?? undefined)}
                 className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer"
               >
                 <ChevronsDown className="w-3.5 h-3.5 text-amber-400" />
@@ -2364,7 +2488,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               </button>
 
               <button
-                onClick={() => handleLayerAction(activeMenuId, 'bringForward')}
+                onClick={() => handleLayerAction(activeMenuId, 'bringForward', activeMenuTrackIndex ?? undefined)}
                 className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer"
               >
                 <ArrowUp className="w-3.5 h-3.5 text-emerald-400" />
@@ -2372,7 +2496,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               </button>
 
               <button
-                onClick={() => handleLayerAction(activeMenuId, 'sendBackward')}
+                onClick={() => handleLayerAction(activeMenuId, 'sendBackward', activeMenuTrackIndex ?? undefined)}
                 className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer"
               >
                 <ArrowDown className="w-3.5 h-3.5 text-purple-400" />
@@ -2382,7 +2506,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               <div className="h-px bg-slate-700/60 my-1" />
 
               <button
-                onClick={() => handleLayerAction(activeMenuId, 'delete')}
+                onClick={() => handleLayerAction(activeMenuId, 'delete', activeMenuTrackIndex ?? undefined)}
                 className="w-full text-left px-3 py-1.5 hover:bg-red-600/30 text-red-400 hover:text-red-200 flex items-center space-x-2.5 cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />

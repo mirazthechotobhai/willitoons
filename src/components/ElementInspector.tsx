@@ -23,6 +23,7 @@ import {
   ZoomOut,
   Maximize2,
   Image as ImageIcon,
+  Camera,
   Link,
   Unlink,
   FileUp,
@@ -426,13 +427,15 @@ export const ElementInspector: React.FC<ElementInspectorProps> = ({
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white shrink-0">
         <div className="flex items-center space-x-2">
-          {element.type === 'image' ? (
+          {element.type === 'camera' ? (
+            <Camera className="w-4 h-4 text-red-600" />
+          ) : element.type === 'image' ? (
             <ImageIcon className="w-4 h-4 text-blue-600" />
           ) : (
             <Sliders className="w-4 h-4 text-blue-600" />
           )}
           <span className="text-xs font-bold text-slate-800 uppercase tracking-wider truncate">
-            {element.type === 'image' ? 'Image Properties' : `${element.type} Properties`}
+            {element.type === 'camera' ? 'Camera Layer' : element.type === 'image' ? 'Image Properties' : `${element.type} Properties`}
           </span>
         </div>
 
@@ -470,6 +473,80 @@ export const ElementInspector: React.FC<ElementInspectorProps> = ({
       {/* Body Controls */}
       <div className="flex-1 p-4 overflow-y-auto space-y-4 text-xs bg-slate-50/30">
         
+        {/* CAMERA SPECIFIC CONTROLS & TIMING (Default 5s, fully customizable) */}
+        {element.type === 'camera' && (
+          <div className="p-3 bg-gradient-to-br from-rose-50 via-red-50 to-orange-50/50 border border-red-200/80 rounded-xl space-y-3 shadow-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-1.5">
+                <Camera className="w-4 h-4 text-red-600" />
+                <span className="font-bold text-slate-800 text-xs">Camera Layer Duration</span>
+              </div>
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-100/90 text-red-700 border border-red-200/60">
+                16:9 Viewport
+              </span>
+            </div>
+
+            {/* Duration Input & Quick Controls */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-600 font-medium">Clip Duration:</span>
+                <span className="font-mono text-xs font-bold text-red-600 bg-white px-2 py-0.5 rounded border border-red-200 shadow-2xs">
+                  {Math.round(element.duration * 10) / 10}s
+                </span>
+              </div>
+
+              {/* Quick Preset Buttons (Default 5s) */}
+              <div className="grid grid-cols-4 gap-1">
+                {[2, 3, 5, 10].map(sec => (
+                  <button
+                    key={sec}
+                    type="button"
+                    onClick={() => {
+                      if (onUpdateElement) {
+                        onUpdateElement(element.id, { duration: sec });
+                      }
+                    }}
+                    className={`py-1 rounded text-[10px] font-semibold border transition-all cursor-pointer ${
+                      Math.abs(element.duration - sec) < 0.05
+                        ? 'bg-red-600 text-white border-red-600 shadow-xs'
+                        : 'bg-white hover:bg-red-50 border-slate-200 text-slate-700'
+                    }`}
+                    title={`Set camera layer duration to ${sec} seconds`}
+                  >
+                    {sec}s{sec === 5 ? ' (Default)' : ''}
+                  </button>
+                ))}
+              </div>
+
+              {/* Slider for smooth resizing duration */}
+              <div className="pt-1">
+                <input
+                  type="range"
+                  min="0.5"
+                  max="30"
+                  step="0.5"
+                  value={element.duration}
+                  onChange={e => {
+                    if (onUpdateElement) {
+                      onUpdateElement(element.id, { duration: parseFloat(e.target.value) });
+                    }
+                  }}
+                  className="w-full accent-red-600 cursor-pointer h-1.5"
+                />
+                <div className="flex justify-between text-[9px] text-slate-400 mt-0.5 font-mono">
+                  <span>0.5s</span>
+                  <span className="font-semibold text-red-500">5s (Default)</span>
+                  <span>30s</span>
+                </div>
+              </div>
+            </div>
+
+            <p className="text-[10px] text-slate-500 leading-tight border-t border-red-100 pt-2">
+              💡 <strong>ক্যামেরা ডিউরেশন:</strong> টাইমলাইনে ড্র্যাগ করে অথবা উপরোক্ত স্লাইডার ও প্রিসেট দিয়ে ইচ্ছামতো সময় ছোট-বড় করতে পারবেন।
+            </p>
+          </div>
+        )}
+
         {/* IMAGE SPECIFIC CONTROLS & FIT TO SCREEN (One-click adjust without touching or manual zoom) */}
         {element.type === 'image' && (
           <div className="p-3 bg-gradient-to-br from-blue-50 via-sky-50 to-indigo-50/60 border border-blue-200/80 rounded-xl space-y-3 shadow-xs">
@@ -1221,6 +1298,22 @@ export const ElementInspector: React.FC<ElementInspectorProps> = ({
               className="w-full accent-blue-600 cursor-pointer"
             />
           </div>
+
+          {/* Flip Horizontal */}
+          <div className="flex items-center justify-between pt-1">
+            <span className="text-slate-500 font-medium">Flip Orientation</span>
+            <button
+              onClick={() => onUpdateElement(element.id, { scaleX: (element.scaleX || 1) === 1 ? -1 : 1 })}
+              className={`flex items-center space-x-1 px-2.5 py-1 rounded-lg cursor-pointer shadow-xs transition-colors border ${
+                element.scaleX === -1
+                  ? 'bg-blue-50 border-blue-300 text-blue-700 font-semibold'
+                  : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200'
+              }`}
+            >
+              <FlipHorizontal className="w-3.5 h-3.5 text-blue-600" />
+              <span>{element.scaleX === -1 ? 'Flipped Horizontal' : 'Normal'}</span>
+            </button>
+          </div>
         </div>
 
         {/* Z-Index / Layer Ordering */}
@@ -1230,17 +1323,29 @@ export const ElementInspector: React.FC<ElementInspectorProps> = ({
             <button
               onClick={() => {
                 if (scene && onUpdateScene) {
-                  const sortedElements = [...scene.elements].sort((a, b) => (a.trackIndex ?? 0) - (b.trackIndex ?? 0));
-                  const currIdx = sortedElements.findIndex(e => e.id === element.id);
-                  if (currIdx > 0) {
-                    const temp = sortedElements[currIdx];
-                    sortedElements[currIdx] = sortedElements[currIdx - 1];
-                    sortedElements[currIdx - 1] = temp;
-                    const updated = sortedElements.map((el, i) => ({
-                      ...el,
-                      trackIndex: i,
-                      zIndex: Math.max(10, (sortedElements.length - i) * 10),
-                    }));
+                  const targetTrack = element.trackIndex ?? 0;
+                  const uniqueTrackIndices = [...new Set<number>(scene.elements.map(e => e.trackIndex ?? 0))].sort((a, b) => a - b);
+                  const currTrackPos = uniqueTrackIndices.indexOf(targetTrack);
+                  if (currTrackPos > 0) {
+                    const swapTrack = uniqueTrackIndices[currTrackPos - 1];
+                    const updated = scene.elements.map(el => {
+                      const t = el.trackIndex ?? 0;
+                      if (t === targetTrack) {
+                        return {
+                          ...el,
+                          trackIndex: swapTrack,
+                          zIndex: Math.max(10, (uniqueTrackIndices.length - (currTrackPos - 1)) * 10),
+                        };
+                      }
+                      if (t === swapTrack) {
+                        return {
+                          ...el,
+                          trackIndex: targetTrack,
+                          zIndex: Math.max(10, (uniqueTrackIndices.length - currTrackPos) * 10),
+                        };
+                      }
+                      return el;
+                    });
                     onUpdateScene({ elements: updated });
                     return;
                   }
@@ -1255,17 +1360,29 @@ export const ElementInspector: React.FC<ElementInspectorProps> = ({
             <button
               onClick={() => {
                 if (scene && onUpdateScene) {
-                  const sortedElements = [...scene.elements].sort((a, b) => (a.trackIndex ?? 0) - (b.trackIndex ?? 0));
-                  const currIdx = sortedElements.findIndex(e => e.id === element.id);
-                  if (currIdx >= 0 && currIdx < sortedElements.length - 1) {
-                    const temp = sortedElements[currIdx];
-                    sortedElements[currIdx] = sortedElements[currIdx + 1];
-                    sortedElements[currIdx + 1] = temp;
-                    const updated = sortedElements.map((el, i) => ({
-                      ...el,
-                      trackIndex: i,
-                      zIndex: Math.max(10, (sortedElements.length - i) * 10),
-                    }));
+                  const targetTrack = element.trackIndex ?? 0;
+                  const uniqueTrackIndices = [...new Set<number>(scene.elements.map(e => e.trackIndex ?? 0))].sort((a, b) => a - b);
+                  const currTrackPos = uniqueTrackIndices.indexOf(targetTrack);
+                  if (currTrackPos >= 0 && currTrackPos < uniqueTrackIndices.length - 1) {
+                    const swapTrack = uniqueTrackIndices[currTrackPos + 1];
+                    const updated = scene.elements.map(el => {
+                      const t = el.trackIndex ?? 0;
+                      if (t === targetTrack) {
+                        return {
+                          ...el,
+                          trackIndex: swapTrack,
+                          zIndex: Math.max(10, (uniqueTrackIndices.length - (currTrackPos + 1)) * 10),
+                        };
+                      }
+                      if (t === swapTrack) {
+                        return {
+                          ...el,
+                          trackIndex: targetTrack,
+                          zIndex: Math.max(10, (uniqueTrackIndices.length - currTrackPos) * 10),
+                        };
+                      }
+                      return el;
+                    });
                     onUpdateScene({ elements: updated });
                     return;
                   }

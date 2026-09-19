@@ -78,6 +78,26 @@ function preloadImage(url: string): Promise<HTMLImageElement | null> {
   });
 }
 
+/**
+ * Calculates the exact duration occupied by layers (visual elements and audio tracks)
+ * on the timeline so export matches the user's added layers.
+ */
+export const getEffectiveSceneDuration = (sc: Scene): number => {
+  const layerEndTimes: number[] = [
+    ...sc.elements.map(e => (e.startTime || 0) + (e.duration || 0)),
+    ...(sc.audioTracks || []).map(a => (a.startTime || 0) + (a.duration || 0)),
+  ];
+
+  if (layerEndTimes.length > 0) {
+    const maxEnd = Math.max(...layerEndTimes);
+    if (maxEnd > 0) {
+      return Math.max(0.5, Math.round(maxEnd * 100) / 100);
+    }
+  }
+
+  return sc.duration || 5;
+};
+
 export const ExportModal: React.FC<ExportModalProps> = ({
   isOpen,
   onClose,
@@ -103,9 +123,9 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Compute total duration depending on scope
+  // Compute total duration depending on scope based on actual layer duration on timeline
   const targetScenes = exportScope === 'all' && scenes && scenes.length > 0 ? scenes : [scene];
-  const totalDuration = targetScenes.reduce((acc, sc) => acc + (sc.duration || 5), 0);
+  const totalDuration = targetScenes.reduce((acc, sc) => acc + getEffectiveSceneDuration(sc), 0);
 
   const handleCancelExport = () => {
     isCancelledRef.current = true;
@@ -235,15 +255,16 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       const frameIntervalMs = 1000 / fps;
       let currentTotalFrame = 0;
 
-      // Map accumulated scene start times
-      const sceneTimeline: Array<{ scene: Scene; startTime: number; endTime: number }> = [];
+      // Map accumulated scene start times based on timeline layers
+      const sceneTimeline: Array<{ scene: Scene; startTime: number; endTime: number; duration: number }> = [];
       let accumulatedTime = 0;
       for (const sc of targetScenes) {
-        const scDur = sc.duration || 5;
+        const scDur = getEffectiveSceneDuration(sc);
         sceneTimeline.push({
           scene: sc,
           startTime: accumulatedTime,
           endTime: accumulatedTime + scDur,
+          duration: scDur,
         });
         accumulatedTime += scDur;
       }
@@ -270,7 +291,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         const sceneLocalTime = Math.max(0, globalTime - currentSceneEntry.startTime);
 
         setStatusMessage(
-          `Recording ${activeSc.name || 'Scene'} (${progressPct}%) — ${sceneLocalTime.toFixed(1)}s / ${activeSc.duration}s`
+          `Recording ${activeSc.name || 'Scene'} (${progressPct}%) — ${sceneLocalTime.toFixed(1)}s / ${currentSceneEntry.duration.toFixed(1)}s`
         );
 
         // --- A. AUDIO TRIGGER CHECK ---
@@ -294,7 +315,56 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           }
         });
 
-        // --- B. DRAW CANVAS BACKGROUND ---
+        // --- B. DRAW CANVAS BACKGROUND & CAMERA LAYER TRANSFORM ---
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, targetWidth, targetHeight);
+
+        const activeCamera = activeSc.elements.find(
+          el =>
+            el.type === 'camera' &&
+            el.visible !== false &&
+            sceneLocalTime >= el.startTime &&
+            sceneLocalTime <= el.startTime + el.duration
+        );
+
+        ctx.save();
+        if (activeCamera) {
+          let cx = (activeCamera.x / 100) * targetWidth;
+          let cy = (activeCamera.y / 100) * targetHeight;
+          let cw = activeCamera.width;
+          let camFlipX = activeCamera.scaleX === -1 ? -1 : 1;
+
+          if (activeCamera.hasCameraMotion) {
+            const rawProgress = Math.max(
+              0,
+              Math.min(1, (sceneLocalTime - activeCamera.startTime) / Math.max(0.1, activeCamera.duration))
+            );
+            const t = activeCamera.cameraMotion === 'cut' ? (rawProgress < 0.5 ? 0 : 1) : rawProgress;
+
+            const startX = activeCamera.x;
+            const startY = activeCamera.y;
+            const startW = activeCamera.width;
+            const startFlip = activeCamera.scaleX === -1;
+
+            const endX = activeCamera.cameraTargetX ?? Math.min(95, startX + 7);
+            const endY = activeCamera.cameraTargetY ?? Math.min(95, startY + 7);
+            const endW = activeCamera.cameraTargetWidth ?? startW;
+            const endFlip = (activeCamera.cameraTargetScaleX ?? (activeCamera.scaleX || 1)) === -1;
+
+            const curX = startX + (endX - startX) * t;
+            const curY = startY + (endY - startY) * t;
+            cw = startW + (endW - startW) * t;
+            camFlipX = (rawProgress >= 0.5 ? endFlip : startFlip) ? -1 : 1;
+            cx = (curX / 100) * targetWidth;
+            cy = (curY / 100) * targetHeight;
+          }
+
+          const camScale = 100 / Math.max(1, cw);
+          ctx.translate(targetWidth / 2, targetHeight / 2);
+          ctx.scale(camFlipX * camScale, camScale);
+          ctx.translate(-cx, -cy);
+        }
+
         if (activeSc.background.type === 'color') {
           ctx.fillStyle = activeSc.background.value || '#ffffff';
           ctx.fillRect(0, 0, targetWidth, targetHeight);
@@ -329,6 +399,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             el =>
               !el.isBackground &&
               el.visible !== false &&
+              el.type !== 'camera' &&
               sceneLocalTime >= el.startTime &&
               sceneLocalTime <= el.startTime + el.duration
           )
@@ -508,6 +579,9 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           ctx.restore();
         });
 
+        // Restore camera frame transform
+        ctx.restore();
+
         // --- E. UPDATE LIVE PREVIEW CANVAS IN MODAL ---
         if (previewCanvas && previewCtx) {
           previewCtx.drawImage(canvas, 0, 0, previewCanvas.width, previewCanvas.height);
@@ -636,7 +710,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   <span>Current Scene ({scene.name || `Scene ${activeSceneIndex + 1}`})</span>
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5">
-                  Duration: {scene.duration}s · {scene.elements.length} elements
+                  Duration: {getEffectiveSceneDuration(scene).toFixed(1).replace(/\.0$/, '')}s · {scene.elements.length} elements
                 </div>
               </button>
 
@@ -655,7 +729,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   <span>Full Project (All {scenes.length} Scenes)</span>
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5">
-                  Total Duration: {totalDuration}s
+                  Total Duration: {totalDuration.toFixed(1).replace(/\.0$/, '')}s
                 </div>
               </button>
             </div>
@@ -769,7 +843,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         {/* Modal Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 bg-slate-50">
           <div className="text-[11px] text-slate-500">
-            Export Time: <span className="text-slate-800 font-bold">{totalDuration}s</span> · {resolution} ·{' '}
+            Export Time: <span className="text-slate-800 font-bold">{totalDuration.toFixed(1).replace(/\.0$/, '')}s</span> · {resolution} ·{' '}
             {fps} FPS
           </div>
 

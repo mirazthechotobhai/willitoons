@@ -11,6 +11,7 @@ import {
   deleteMediaAssetFromCloud,
   fileToPermanentDataURL,
 } from '../services/mediaAssetService';
+import { isGifMedia, getGifDuration } from '../utils/gifUtils';
 import {
   Upload,
   Sparkles,
@@ -109,6 +110,19 @@ export const MediaDrawer: React.FC<MediaDrawerProps> = ({
         setUploadStatus(`Uploading "${file.name}" to Cloud...`);
 
         try {
+          const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+          let gifDuration: number | undefined;
+          if (isGif) {
+            try {
+              const detected = await getGifDuration(file);
+              if (detected && detected > 0) {
+                gifDuration = detected;
+              }
+            } catch (err) {
+              console.warn('Could not parse GIF duration:', err);
+            }
+          }
+
           const result = await uploadImageToImgBB(file, file.name);
 
           const bgAsset: BackgroundAsset = {
@@ -120,6 +134,7 @@ export const MediaDrawer: React.FC<MediaDrawerProps> = ({
             imgbbId: result.id,
             width: result.width,
             height: result.height,
+            duration: gifDuration,
             createdAt: Date.now(),
           };
 
@@ -132,9 +147,10 @@ export const MediaDrawer: React.FC<MediaDrawerProps> = ({
             type: 'image',
             url: bgAsset.url,
             thumbnail: bgAsset.thumbnail || bgAsset.url,
+            duration: gifDuration,
             width: bgAsset.width,
             height: bgAsset.height,
-            category: 'Uploaded Background',
+            category: isGif ? 'Animated GIF' : 'Uploaded Background',
           };
 
           // Also save in media_assets collection
@@ -456,16 +472,23 @@ export const MediaDrawer: React.FC<MediaDrawerProps> = ({
 
                         {/* Top Badges & Actions */}
                         <div className="absolute top-1.5 left-1.5 right-1.5 flex items-center justify-between pointer-events-none">
-                          {isUserUploaded ? (
-                            <span className="text-[9px] px-1.5 py-0.5 bg-emerald-600/90 backdrop-blur-xs text-white font-medium rounded flex items-center space-x-0.5 shadow-xs">
-                              <Cloud className="w-2.5 h-2.5" />
-                              <span>Cloud</span>
-                            </span>
-                          ) : (
-                            <span className="text-[9px] px-1.5 py-0.5 bg-black/60 backdrop-blur-xs text-slate-100 font-medium rounded">
-                              Stock
-                            </span>
-                          )}
+                          <div className="flex items-center space-x-1">
+                            {isUserUploaded ? (
+                              <span className="text-[9px] px-1.5 py-0.5 bg-emerald-600/90 backdrop-blur-xs text-white font-medium rounded flex items-center space-x-0.5 shadow-xs">
+                                <Cloud className="w-2.5 h-2.5" />
+                                <span>Cloud</span>
+                              </span>
+                            ) : (
+                              <span className="text-[9px] px-1.5 py-0.5 bg-black/60 backdrop-blur-xs text-slate-100 font-medium rounded">
+                                Stock
+                              </span>
+                            )}
+                            {isGifMedia(asset.url, asset.name) && (
+                              <span className="text-[9px] px-1.5 py-0.5 bg-purple-600/90 backdrop-blur-xs text-white font-bold rounded shadow-xs">
+                                {asset.duration ? `${asset.duration}s GIF` : 'GIF'}
+                              </span>
+                            )}
+                          </div>
 
                           {isUserUploaded && (
                             <button

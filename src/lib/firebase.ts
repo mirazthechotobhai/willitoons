@@ -1,23 +1,25 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getFirestore } from 'firebase/firestore';
+import firebaseAppletConfig from '../../firebase-applet-config.json';
 
-// User's web app's Firebase configuration
+// Use the project's provisioned Firebase configuration from firebase-applet-config.json
 export const firebaseConfig = {
-  apiKey: "AIzaSyDpaSKlMUb9_7QTokR9y3yyAvjEplQp9zo",
-  authDomain: "willitoons.firebaseapp.com",
-  databaseURL: "https://willitoons-default-rtdb.firebaseio.com",
-  projectId: "willitoons",
-  storageBucket: "willitoons.firebasestorage.app",
-  messagingSenderId: "363850068080",
-  appId: "1:363850068080:web:ef31ef4202f212716544b5",
-  measurementId: "G-YJVJTM16QZ"
+  apiKey: firebaseAppletConfig.apiKey,
+  authDomain: firebaseAppletConfig.authDomain,
+  projectId: firebaseAppletConfig.projectId,
+  storageBucket: firebaseAppletConfig.storageBucket,
+  messagingSenderId: firebaseAppletConfig.messagingSenderId,
+  appId: firebaseAppletConfig.appId,
+  measurementId: firebaseAppletConfig.measurementId || undefined,
 };
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
 
-// Initialize Firestore
-export const db = getFirestore(app);
+// Initialize Firestore with the provisioned database ID
+export const db = firebaseAppletConfig.firestoreDatabaseId
+  ? getFirestore(app, firebaseAppletConfig.firestoreDatabaseId)
+  : getFirestore(app);
 export const auth = getAuth(app);
 
 // Initialize Firebase Analytics if supported
@@ -87,24 +89,6 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     // Graceful logging for offline/transient network events
     console.info(`Firestore (${operationType} at ${path}):`, errInfo.error);
   }
-}
-
-// Non-blocking connection test conforming to firebase-skill
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.info('Firestore is currently operating in offline mode.');
-    }
-  }
-}
-
-if (typeof window !== 'undefined') {
-  // Test connection after initial paint
-  setTimeout(() => {
-    testConnection();
-  }, 1000);
 }
 
 export default app;

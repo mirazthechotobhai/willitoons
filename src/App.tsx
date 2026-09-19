@@ -16,6 +16,7 @@ import {
   loadAllMediaAssetsFromCloud,
   deleteMediaAssetFromCloud,
 } from './services/mediaAssetService';
+import { isGifMedia, getGifDuration } from './utils/gifUtils';
 
 // Subcomponents
 import { Navbar } from './components/Navbar';
@@ -41,6 +42,9 @@ export default function App() {
   const MAX_HISTORY = 80;
   const [history, setHistory] = useState<Scene[][]>([INITIAL_SCENES]);
   const [historyIndex, setHistoryIndex] = useState<number>(0);
+
+  // 16:9 1/4th Canvas Area Camera Guide Box Toggle
+  const [isCameraBoxVisible, setIsCameraBoxVisible] = useState<boolean>(false);
 
   // Synchronized refs to avoid stale closures during high-frequency interaction events
   const historyRef = useRef<Scene[][]>([INITIAL_SCENES]);
@@ -553,6 +557,24 @@ export default function App() {
     let targetElement = elementId ? currentScene.elements.find(el => el.id === elementId) : null;
     let targetAudio = selectedAudioId ? currentScene.audioTracks?.find(at => at.id === selectedAudioId) : null;
 
+    // If targetElement ends or starts right at splitTime, search for a spanning layer across splitTime
+    if (targetElement && (splitTime <= targetElement.startTime + 0.05 || splitTime >= targetElement.startTime + targetElement.duration - 0.05)) {
+      const spanningElement = currentScene.elements.find(
+        el => el.id !== targetElement?.id && splitTime > el.startTime + 0.05 && splitTime < el.startTime + el.duration - 0.05
+      );
+      if (spanningElement) {
+        targetElement = spanningElement;
+      } else {
+        const spanningAudio = currentScene.audioTracks?.find(
+          at => splitTime > at.startTime + 0.05 && splitTime < at.startTime + at.duration - 0.05
+        );
+        if (spanningAudio) {
+          targetElement = null;
+          targetAudio = spanningAudio;
+        }
+      }
+    }
+
     if (!targetElement && !targetAudio) {
       targetElement = currentScene.elements.find(
         el => splitTime > el.startTime + 0.05 && splitTime < el.startTime + el.duration - 0.05
@@ -654,14 +676,23 @@ export default function App() {
   };
 
   // --- DRAG AND DROP ONTO STAGE ---
-  const handleDropAssetOnStage = (
+  const handleDropAssetOnStage = async (
     itemType: string,
     itemData: CharacterModel | MediaAsset,
     dropX: number,
     dropY: number
   ) => {
+    // Automatically close open drawers upon adding an item
+    setActiveLeftTab(null);
+    setIsMobileLeftRailOpen(false);
+
     if (itemType === 'character') {
       const char = itemData as CharacterModel;
+      // Default 8-second duration for character (matching images instead of taking full 2-minute scene)
+      const defaultCharDuration = 8;
+      const start = Math.min(currentTime, Math.max(0, activeScene.duration - 1));
+      const dur = Math.max(1, Math.min(defaultCharDuration, activeScene.duration - start));
+
       const newElem: StageElement = {
         id: `elem-char-${Date.now()}`,
         name: char.name,
@@ -672,8 +703,8 @@ export default function App() {
         width: 25,
         height: 50,
         zIndex: (activeScene.elements.length + 1) * 10,
-        startTime: 0,
-        duration: activeScene.duration,
+        startTime: start,
+        duration: dur,
         animation: 'idle',
         scaleX: 1,
       };
@@ -693,9 +724,30 @@ export default function App() {
         };
         handleAddAudioTrack(newTrack);
       } else {
+        // Check if item is an animated GIF or regular image
+        const isGif = isGifMedia(media.url, media.name);
+        let targetDuration = 8; // Default 8s for standard images
+
+        if (media.duration && media.duration > 0) {
+          // If media already has real duration stored (e.g. from GIF upload)
+          targetDuration = media.duration;
+        } else if (isGif) {
+          try {
+            const detected = await getGifDuration(media.url);
+            if (detected && detected > 0) {
+              targetDuration = detected;
+            }
+          } catch (err) {
+            console.warn('Could not parse GIF duration:', err);
+          }
+        }
+
+        const start = Math.min(currentTime, Math.max(0, activeScene.duration - 1));
+        const dur = Math.max(0.5, Math.min(targetDuration, activeScene.duration - start));
+
         // If image or video prop
         const isProp = dropX > 15 && dropX < 85 && dropY > 15 && dropY < 85;
-        if (isProp && media.type === 'image') {
+        if (isProp || isGif) {
           const newElem: StageElement = {
             id: `elem-media-${Date.now()}`,
             name: media.name,
@@ -706,8 +758,8 @@ export default function App() {
             width: 28,
             height: 28,
             zIndex: (activeScene.elements.length + 1) * 10,
-            startTime: currentTime,
-            duration: Math.min(activeScene.duration, 8),
+            startTime: start,
+            duration: dur,
           };
           handleAddElement(newElem);
         } else {
@@ -752,6 +804,40 @@ export default function App() {
       zIndex: (activeScene.elements.length + 1) * 10,
       startTime: currentTime,
       duration: Math.min(activeScene.duration - currentTime, 6),
+    };
+    handleAddElement(newElem);
+  };
+
+  // Add 16:9 Camera Layer to timeline with 4-corner proportional resize (Default 5s duration)
+  const handleAddCameraLayer = () => {
+    const existingCameras = activeScene.elements.filter(e => e.type === 'camera');
+    const cameraNumber = existingCameras.length + 1;
+    const startT = currentTime < activeScene.duration ? currentTime : 0;
+    const defaultDuration = 5; // Default 5 seconds as requested
+
+    // Extend scene duration if remaining time is less than 5 seconds so user gets full 5s
+    if (startT + defaultDuration > activeScene.duration) {
+      handleUpdateScene(activeSceneIndex, {
+        duration: Math.min(120, Math.max(activeScene.duration, Number((startT + defaultDuration).toFixed(2)))),
+      });
+    }
+
+    const newElem: StageElement = {
+      id: `camera-${Date.now()}`,
+      name: `Camera ${cameraNumber}`,
+      type: 'camera',
+      x: 25,
+      y: 25,
+      width: 50,
+      height: 50,
+      rotation: 0,
+      scaleX: 1,
+      cameraMotion: 'linear',
+      zIndex: (activeScene.elements.length + 1) * 10 + 50,
+      startTime: startT,
+      duration: defaultDuration,
+      visible: true,
+      locked: false,
     };
     handleAddElement(newElem);
   };
@@ -877,6 +963,9 @@ export default function App() {
               onSplitAtPlayhead={handleSplitAtPlayhead}
               onOpenProperties={() => setActiveRightTab(activeRightTab === 'inspector' ? null : 'inspector')}
               isPropertiesOpen={activeRightTab === 'inspector'}
+              isCameraBoxVisible={isCameraBoxVisible}
+              onToggleCameraBox={() => setIsCameraBoxVisible(prev => !prev)}
+              onAddCameraLayer={handleAddCameraLayer}
             />
 
           </div>
@@ -982,6 +1071,8 @@ export default function App() {
                 characters={characters}
                 onSelectCharacter={char => {
                   handleDropAssetOnStage('character', char, 50, 65);
+                  setActiveLeftTab(null);
+                  setIsMobileLeftRailOpen(false);
                 }}
                 onCreateNewCharacter={() => {
                   setCharacterBeingEdited(null);
@@ -1009,9 +1100,13 @@ export default function App() {
                   );
                   setScenes(nextScenes);
                   pushHistorySnapshot(nextScenes);
+                  setActiveLeftTab(null);
+                  setIsMobileLeftRailOpen(false);
                 }}
                 onSelectAssetForStage={asset => {
                   handleDropAssetOnStage('media', asset, 50, 50);
+                  setActiveLeftTab(null);
+                  setIsMobileLeftRailOpen(false);
                 }}
                 onDragStartMedia={handleDragStartMedia}
                 onOpenAIVoiceModal={() => setIsVoiceoverModalOpen(true)}
@@ -1023,13 +1118,19 @@ export default function App() {
               <ExtraToolsDrawer
                 activeTab={activeLeftTab}
                 onClose={() => setActiveLeftTab(null)}
-                onAddTextElement={handleAddTextElement}
+                onAddTextElement={type => {
+                  handleAddTextElement(type);
+                  setActiveLeftTab(null);
+                  setIsMobileLeftRailOpen(false);
+                }}
                 onApplyBackground={url => {
                   setScenes(prevScenes =>
                     prevScenes.map((sc, idx) =>
                       idx === activeSceneIndex ? { ...sc, background: { type: 'image', value: url } } : sc
                     )
                   );
+                  setActiveLeftTab(null);
+                  setIsMobileLeftRailOpen(false);
                 }}
                 onAddGeneratedAsset={asset => setUserAssets(prev => [asset, ...prev])}
               />

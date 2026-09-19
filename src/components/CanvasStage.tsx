@@ -6,6 +6,7 @@ import {
   CharacterModel,
   MediaAsset,
 } from '../types';
+import { isGifMedia, getGifDuration } from '../utils/gifUtils';
 import { CartoonCharacter } from './CartoonCharacter';
 import {
   Play,
@@ -39,6 +40,8 @@ import {
   Crosshair,
   Sliders,
   X,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 interface CanvasStageProps {
@@ -68,6 +71,9 @@ interface CanvasStageProps {
   onSplitAtPlayhead?: (elementId?: string, atTime?: number) => void;
   onOpenProperties?: () => void;
   isPropertiesOpen?: boolean;
+  isCameraBoxVisible?: boolean;
+  onToggleCameraBox?: () => void;
+  onAddCameraLayer?: () => void;
 }
 
 export const CanvasStage: React.FC<CanvasStageProps> = ({
@@ -97,6 +103,9 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   onSplitAtPlayhead,
   onOpenProperties,
   isPropertiesOpen,
+  isCameraBoxVisible,
+  onToggleCameraBox,
+  onAddCameraLayer,
 }) => {
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const stageViewportRef = useRef<HTMLDivElement | null>(null);
@@ -104,6 +113,8 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
   const [isPanMode, setIsPanMode] = useState(false);
   const [isMultiSelect, setIsMultiSelect] = useState(false);
+  const [isPreviewCameraMode, setIsPreviewCameraMode] = useState(false);
+  const [selectedCameraBox, setSelectedCameraBox] = useState<'start' | 'target'>('start');
 
   // Dedicated Pan & Stage Dimension states
   const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -306,27 +317,73 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     e.dataTransfer.dropEffect = 'copy';
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     const dataString = e.dataTransfer.getData('application/json');
-    if (!dataString) return;
+    if (dataString) {
+      try {
+        const parsed = JSON.parse(dataString);
+        const stageRect = stageContainerRef.current?.getBoundingClientRect();
+        if (!stageRect) return;
 
-    try {
-      const parsed = JSON.parse(dataString);
+        const dropX = ((e.clientX - stageRect.left) / stageRect.width) * 100;
+        const dropY = ((e.clientY - stageRect.top) / stageRect.height) * 100;
+
+        onDropAssetOnStage(
+          parsed.type,
+          parsed.data,
+          Math.max(10, Math.min(80, Math.round(dropX))),
+          Math.max(10, Math.min(80, Math.round(dropY)))
+        );
+      } catch (err) {
+        console.warn('Drop error:', err);
+      }
+      return;
+    }
+
+    // Direct OS file drop onto stage (e.g. dragging a GIF or image file from desktop)
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
       const stageRect = stageContainerRef.current?.getBoundingClientRect();
-      if (!stageRect) return;
+      const dropX = stageRect ? ((e.clientX - stageRect.left) / stageRect.width) * 100 : 50;
+      const dropY = stageRect ? ((e.clientY - stageRect.top) / stageRect.height) * 100 : 50;
 
-      const dropX = ((e.clientX - stageRect.left) / stageRect.width) * 100;
-      const dropY = ((e.clientY - stageRect.top) / stageRect.height) * 100;
+      const isImageOrGif = file.type.startsWith('image/') || file.name.match(/\.(png|jpe?g|webp|gif|svg)$/i);
+      const isAudio = file.type.startsWith('audio/') || file.name.match(/\.(mp3|wav|ogg|m4a)$/i);
 
-      onDropAssetOnStage(
-        parsed.type,
-        parsed.data,
-        Math.max(10, Math.min(80, Math.round(dropX))),
-        Math.max(10, Math.min(80, Math.round(dropY)))
-      );
-    } catch (err) {
-      console.warn('Drop error:', err);
+      if (isImageOrGif) {
+        let gifDuration: number | undefined;
+        if (file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif')) {
+          const detected = await getGifDuration(file);
+          if (detected && detected > 0) gifDuration = detected;
+        }
+        const fileUrl = URL.createObjectURL(file);
+        const mediaAsset: MediaAsset = {
+          id: `drop-${Date.now()}`,
+          name: file.name.replace(/\.[^/.]+$/, ''),
+          type: 'image',
+          url: fileUrl,
+          duration: gifDuration,
+          category: gifDuration ? 'Animated GIF' : 'Custom Prop',
+        };
+        onDropAssetOnStage(
+          'media',
+          mediaAsset,
+          Math.max(10, Math.min(80, Math.round(dropX))),
+          Math.max(10, Math.min(80, Math.round(dropY)))
+        );
+      } else if (isAudio) {
+        const fileUrl = URL.createObjectURL(file);
+        const mediaAsset: MediaAsset = {
+          id: `drop-audio-${Date.now()}`,
+          name: file.name.replace(/\.[^/.]+$/, ''),
+          type: 'audio',
+          url: fileUrl,
+          duration: 5,
+          category: 'Custom Audio',
+        };
+        onDropAssetOnStage('media', mediaAsset, 50, 50);
+      }
     }
   };
 
@@ -365,6 +422,18 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       const deltaX = ((moveEvent.clientX - startClientX) / (stageRect.width || 1)) * 100;
       const deltaY = ((moveEvent.clientY - startClientY) / (stageRect.height || 1)) * 100;
 
+      if (element.type === 'camera') {
+        const halfW = element.width / 2;
+        const halfH = element.height / 2;
+        const clampedX = Math.max(halfW, Math.min(100 - halfW, Math.round(startX + deltaX)));
+        const clampedY = Math.max(halfH, Math.min(100 - halfH, Math.round(startY + deltaY)));
+        onUpdateElement(element.id, {
+          x: clampedX,
+          y: clampedY,
+        });
+        return;
+      }
+
       onUpdateElement(element.id, {
         x: Math.round(Math.max(-300, Math.min(400, startX + deltaX))),
         y: Math.round(Math.max(-300, Math.min(400, startY + deltaY))),
@@ -387,6 +456,198 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       if (hasMoved) {
         onInteractionEnd?.();
       }
+    };
+
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+  };
+
+  // Dragging camera target box (Box 2 / End Box)
+  const handleCameraTargetPointerDown = (e: React.PointerEvent, element: StageElement) => {
+    if (isPanActive) return;
+    if (element.locked) return;
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+
+    e.stopPropagation();
+    onSelectElement(element.id);
+    setSelectedCameraBox('target');
+
+    const target = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    try {
+      target.setPointerCapture(pointerId);
+    } catch (err) {}
+
+    const startClientX = e.clientX;
+    const startClientY = e.clientY;
+    const currentTargetW = element.cameraTargetWidth ?? element.width;
+    const currentTargetH = element.cameraTargetHeight ?? element.height;
+    const startTargetX = element.cameraTargetX ?? Math.min(95, element.x + 7);
+    const startTargetY = element.cameraTargetY ?? Math.min(95, element.y + 7);
+    const stageRect = stageContainerRef.current?.getBoundingClientRect();
+    if (!stageRect) return;
+
+    setIsDraggingElement(true);
+    onInteractionStart?.();
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
+
+      const deltaX = ((moveEvent.clientX - startClientX) / (stageRect.width || 1)) * 100;
+      const deltaY = ((moveEvent.clientY - startClientY) / (stageRect.height || 1)) * 100;
+
+      const halfW = currentTargetW / 2;
+      const halfH = currentTargetH / 2;
+      const clampedX = Math.max(halfW, Math.min(100 - halfW, Math.round(startTargetX + deltaX)));
+      const clampedY = Math.max(halfH, Math.min(100 - halfH, Math.round(startTargetY + deltaY)));
+
+      onUpdateElement(element.id, {
+        cameraTargetX: clampedX,
+        cameraTargetY: clampedY,
+      });
+    };
+
+    const onPointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      try {
+        if (target.hasPointerCapture(pointerId)) {
+          target.releasePointerCapture(pointerId);
+        }
+      } catch (err) {}
+
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+
+      setIsDraggingElement(false);
+      onInteractionEnd?.();
+    };
+
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+  };
+
+  // Corner resize for camera target box (Box 2 / End Box)
+  const handleCameraTargetResizeHandlePointerDown = (
+    e: React.PointerEvent,
+    element: StageElement,
+    handle: 'se' | 'sw' | 'ne' | 'nw'
+  ) => {
+    if (element.locked) return;
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+
+    e.stopPropagation();
+    setSelectedCameraBox('target');
+    const pointerId = e.pointerId;
+    const target = e.currentTarget as HTMLElement;
+    try {
+      target.setPointerCapture(pointerId);
+    } catch (err) {}
+
+    const stageRect = stageContainerRef.current?.getBoundingClientRect();
+    if (!stageRect) return;
+
+    const startX = element.cameraTargetX ?? Math.min(95, element.x + 7);
+    const startY = element.cameraTargetY ?? Math.min(95, element.y + 7);
+    const startW = element.cameraTargetWidth ?? element.width;
+    const startH = element.cameraTargetHeight ?? element.height;
+
+    onInteractionStart?.();
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
+
+      const mouseX = ((moveEvent.clientX - stageRect.left) / (stageRect.width || 1)) * 100;
+      const mouseY = ((moveEvent.clientY - stageRect.top) / (stageRect.height || 1)) * 100;
+
+      if (handle === 'se') {
+        const anchorX = startX - startW / 2;
+        const anchorY = startY - startH / 2;
+        const vx = mouseX - anchorX;
+        const vy = mouseY - anchorY;
+        const scaleFactor = Math.max(0.05, (vx / (startW || 1) + vy / (startH || 1)) / 2);
+        const targetSize = Math.max(8, Math.round(startW * scaleFactor));
+        const maxSize = Math.min(100 - anchorX, 100 - anchorY);
+        const finalSize = Math.max(8, Math.min(maxSize, targetSize));
+        onUpdateElement(element.id, {
+          cameraTargetX: Math.round(anchorX + finalSize / 2),
+          cameraTargetY: Math.round(anchorY + finalSize / 2),
+          cameraTargetWidth: finalSize,
+          cameraTargetHeight: finalSize,
+        });
+        return;
+      }
+
+      if (handle === 'nw') {
+        const anchorX = startX + startW / 2;
+        const anchorY = startY + startH / 2;
+        const vx = anchorX - mouseX;
+        const vy = anchorY - mouseY;
+        const scaleFactor = Math.max(0.05, (vx / (startW || 1) + vy / (startH || 1)) / 2);
+        const targetSize = Math.max(8, Math.round(startW * scaleFactor));
+        const maxSize = Math.min(anchorX, anchorY);
+        const finalSize = Math.max(8, Math.min(maxSize, targetSize));
+        onUpdateElement(element.id, {
+          cameraTargetX: Math.round(anchorX - finalSize / 2),
+          cameraTargetY: Math.round(anchorY - finalSize / 2),
+          cameraTargetWidth: finalSize,
+          cameraTargetHeight: finalSize,
+        });
+        return;
+      }
+
+      if (handle === 'ne') {
+        const anchorX = startX - startW / 2;
+        const anchorY = startY + startH / 2;
+        const vx = mouseX - anchorX;
+        const vy = anchorY - mouseY;
+        const scaleFactor = Math.max(0.05, (vx / (startW || 1) + vy / (startH || 1)) / 2);
+        const targetSize = Math.max(8, Math.round(startW * scaleFactor));
+        const maxSize = Math.min(100 - anchorX, anchorY);
+        const finalSize = Math.max(8, Math.min(maxSize, targetSize));
+        onUpdateElement(element.id, {
+          cameraTargetX: Math.round(anchorX + finalSize / 2),
+          cameraTargetY: Math.round(anchorY - finalSize / 2),
+          cameraTargetWidth: finalSize,
+          cameraTargetHeight: finalSize,
+        });
+        return;
+      }
+
+      if (handle === 'sw') {
+        const anchorX = startX + startW / 2;
+        const anchorY = startY - startH / 2;
+        const vx = anchorX - mouseX;
+        const vy = mouseY - anchorY;
+        const scaleFactor = Math.max(0.05, (vx / (startW || 1) + vy / (startH || 1)) / 2);
+        const targetSize = Math.max(8, Math.round(startW * scaleFactor));
+        const maxSize = Math.min(anchorX, 100 - anchorY);
+        const finalSize = Math.max(8, Math.min(maxSize, targetSize));
+        onUpdateElement(element.id, {
+          cameraTargetX: Math.round(anchorX - finalSize / 2),
+          cameraTargetY: Math.round(anchorY + finalSize / 2),
+          cameraTargetWidth: finalSize,
+          cameraTargetHeight: finalSize,
+        });
+        return;
+      }
+    };
+
+    const onPointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      try {
+        if (target.hasPointerCapture(pointerId)) {
+          target.releasePointerCapture(pointerId);
+        }
+      } catch (err) {}
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+      onInteractionEnd?.();
     };
 
     window.addEventListener('pointermove', onPointerMove, { passive: false });
@@ -440,6 +701,86 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
 
       const mouseX = ((moveEvent.clientX - stageRect.left) / (stageRect.width || 1)) * 100;
       const mouseY = ((moveEvent.clientY - stageRect.top) / (stageRect.height || 1)) * 100;
+
+      // CAMERA ELEMENT PROPORTIONAL CORNER RESIZE (Maintains 16:9 canvas ratio uniformly and clamped inside canvas)
+      if (element.type === 'camera') {
+        if (handle === 'se') {
+          // Top-left anchor is fixed
+          const anchorX = startX - startW / 2;
+          const anchorY = startY - startH / 2;
+          const vx = mouseX - anchorX;
+          const vy = mouseY - anchorY;
+          const scaleFactor = Math.max(0.05, (vx / (startW || 1) + vy / (startH || 1)) / 2);
+          const targetSize = Math.max(8, Math.round(startW * scaleFactor));
+          const maxSize = Math.min(100 - anchorX, 100 - anchorY);
+          const finalSize = Math.max(8, Math.min(maxSize, targetSize));
+          onUpdateElement(element.id, {
+            x: Math.round(anchorX + finalSize / 2),
+            y: Math.round(anchorY + finalSize / 2),
+            width: finalSize,
+            height: finalSize,
+          });
+          return;
+        }
+
+        if (handle === 'nw') {
+          // Bottom-right anchor is fixed
+          const anchorX = startX + startW / 2;
+          const anchorY = startY + startH / 2;
+          const vx = anchorX - mouseX;
+          const vy = anchorY - mouseY;
+          const scaleFactor = Math.max(0.05, (vx / (startW || 1) + vy / (startH || 1)) / 2);
+          const targetSize = Math.max(8, Math.round(startW * scaleFactor));
+          const maxSize = Math.min(anchorX, anchorY);
+          const finalSize = Math.max(8, Math.min(maxSize, targetSize));
+          onUpdateElement(element.id, {
+            x: Math.round(anchorX - finalSize / 2),
+            y: Math.round(anchorY - finalSize / 2),
+            width: finalSize,
+            height: finalSize,
+          });
+          return;
+        }
+
+        if (handle === 'ne') {
+          // Bottom-left anchor is fixed
+          const anchorX = startX - startW / 2;
+          const anchorY = startY + startH / 2;
+          const vx = mouseX - anchorX;
+          const vy = anchorY - mouseY;
+          const scaleFactor = Math.max(0.05, (vx / (startW || 1) + vy / (startH || 1)) / 2);
+          const targetSize = Math.max(8, Math.round(startW * scaleFactor));
+          const maxSize = Math.min(100 - anchorX, anchorY);
+          const finalSize = Math.max(8, Math.min(maxSize, targetSize));
+          onUpdateElement(element.id, {
+            x: Math.round(anchorX + finalSize / 2),
+            y: Math.round(anchorY - finalSize / 2),
+            width: finalSize,
+            height: finalSize,
+          });
+          return;
+        }
+
+        if (handle === 'sw') {
+          // Top-right anchor is fixed
+          const anchorX = startX + startW / 2;
+          const anchorY = startY - startH / 2;
+          const vx = anchorX - mouseX;
+          const vy = mouseY - anchorY;
+          const scaleFactor = Math.max(0.05, (vx / (startW || 1) + vy / (startH || 1)) / 2);
+          const targetSize = Math.max(8, Math.round(startW * scaleFactor));
+          const maxSize = Math.min(anchorX, 100 - anchorY);
+          const finalSize = Math.max(8, Math.min(maxSize, targetSize));
+          onUpdateElement(element.id, {
+            x: Math.round(anchorX - finalSize / 2),
+            y: Math.round(anchorY + finalSize / 2),
+            width: finalSize,
+            height: finalSize,
+          });
+          return;
+        }
+        return;
+      }
 
       // CORNER HANDLES: Directional scale anchoring opposite corner (expands/shrinks strictly in the direction pulled)
       if (handle === 'se') {
@@ -595,44 +936,59 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
 
   const selectedElement = scene.elements.find(el => el.id === selectedElementId);
 
+  // Active Camera Element for current playhead time
+  const activeCameraElement = scene.elements.find(el => {
+    if (el.type !== 'camera' || el.visible === false) return false;
+    const elEnd = el.startTime + el.duration;
+    return currentTime >= el.startTime && (
+      currentTime < elEnd ||
+      (currentTime >= scene.duration && currentTime <= elEnd + 0.05)
+    );
+  });
+
+  const hasCameraLayer = scene.elements.some(el => el.type === 'camera');
+  const isCameraActive = (isPlaying || isPreviewCameraMode) && !!activeCameraElement;
+
+  let currentCamX = activeCameraElement?.x ?? 50;
+  let currentCamY = activeCameraElement?.y ?? 50;
+  let currentCamW = activeCameraElement?.width ?? 50;
+  let currentCamFlip = activeCameraElement?.scaleX === -1;
+
+  if (activeCameraElement?.hasCameraMotion) {
+    const rawProgress = Math.max(
+      0,
+      Math.min(1, (currentTime - activeCameraElement.startTime) / Math.max(0.1, activeCameraElement.duration))
+    );
+    // Uniform, constant speed from start to end (সরাসরি সমান স্পিডে শুরু থেকে শেষ অব্দি যাবে)
+    const t =
+      activeCameraElement.cameraMotion === 'cut'
+        ? (rawProgress < 0.5 ? 0 : 1)
+        : rawProgress;
+
+    const startX = activeCameraElement.x;
+    const startY = activeCameraElement.y;
+    const startW = activeCameraElement.width;
+    const startFlip = activeCameraElement.scaleX === -1;
+
+    const endX = activeCameraElement.cameraTargetX ?? Math.min(95, startX + 7);
+    const endY = activeCameraElement.cameraTargetY ?? Math.min(95, startY + 7);
+    const endW = activeCameraElement.cameraTargetWidth ?? startW;
+    const endFlip = (activeCameraElement.cameraTargetScaleX ?? (activeCameraElement.scaleX || 1)) === -1;
+
+    currentCamX = startX + (endX - startX) * t;
+    currentCamY = startY + (endY - startY) * t;
+    currentCamW = startW + (endW - startW) * t;
+    currentCamFlip = rawProgress >= 0.5 ? endFlip : startFlip;
+  }
+
+  const camScale = activeCameraElement ? 100 / Math.max(1, currentCamW) : 1;
+  const camScaleX = currentCamFlip ? -camScale : camScale;
+  const camTranslateX = activeCameraElement ? 50 - currentCamX * camScale : 0;
+  const camTranslateY = activeCameraElement ? 50 - currentCamY * camScale : 0;
+
   return (
     <div className="flex-1 flex flex-col bg-[#E2E8F0] overflow-hidden select-none relative">
       
-      {/* Top Floating Stage Quick Tools Pill (Always cleanly positioned at top center) */}
-      <div className="absolute top-2.5 sm:top-3 left-1/2 -translate-x-1/2 flex items-center space-x-1 bg-white/95 backdrop-blur-sm px-2.5 py-1 rounded-full shadow-md border border-slate-200 z-20 select-none">
-        <button
-          onClick={() => onSelectElement(null)}
-          title="Select / Pointer"
-          className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-600 text-xs transition-colors cursor-pointer"
-        >
-          <MousePointer className="w-3.5 h-3.5" />
-        </button>
-        <button
-          onClick={() => onAddTextElement?.()}
-          title="Add Text Dialogue"
-          className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-600 text-xs transition-colors cursor-pointer"
-        >
-          <Type className="w-3.5 h-3.5" />
-        </button>
-        <button
-          onClick={() => onAddSpeechBubble?.()}
-          title="Add Speech Bubble"
-          className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-600 text-xs transition-colors cursor-pointer"
-        >
-          <MessageSquare className="w-3.5 h-3.5" />
-        </button>
-        <div className="w-px h-4 bg-slate-200 mx-0.5" />
-        <button
-          onClick={() => setIsPanMode(!isPanMode)}
-          title="Hand Tool (Pan Stage) - Hold Space"
-          className={`w-7 h-7 flex items-center justify-center rounded-full text-xs transition-colors cursor-pointer ${
-            isPanActive ? 'bg-blue-600 text-white font-bold shadow-xs' : 'hover:bg-slate-100 text-slate-600'
-          }`}
-        >
-          <Hand className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
       {/* 16:9 MAIN CANVAS STAGE VIEWPORT & PAN CONTAINER */}
       <div
         ref={stageViewportRef}
@@ -670,6 +1026,22 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
             className="w-full h-full relative overflow-hidden bg-white cursor-default touch-none"
             style={{ touchAction: 'none' }}
           >
+            {/* CAMERA MOTION VIEWPORT CONTAINER (Transforms to zoom & pan camera box to fill canvas) */}
+            <div
+              className="w-full h-full absolute inset-0 overflow-hidden pointer-events-auto"
+              style={
+                isCameraActive && activeCameraElement
+                  ? {
+                      transformOrigin: '0 0',
+                      transform: `translate(50%, 50%) scale(${camScaleX}, ${camScale}) translate(-${currentCamX}%, -${currentCamY}%)`,
+                      transition: 'none',
+                    }
+                  : {
+                      transform: 'none',
+                      transition: 'none',
+                    }
+              }
+            >
             
             {/* STAGE BACKGROUND: Render neutral backdrop or scene background if no active background element in elements */}
             {(!scene.elements.some(el => el.isBackground && el.visible !== false) || scene.background.type === 'color') && (
@@ -734,30 +1106,75 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
               return activeElements
                 .sort((a, b) => a.zIndex - b.zIndex)
                 .map(el => {
-                  const isSelected = el.id === selectedElementId;
+                  // When camera framing is active (playing or previewing), the red camera box itself is invisible
+                  // because we are viewing through the camera lens zoomed to full screen!
+                  if (el.type === 'camera' && (isCameraActive || isPlaying)) {
+                    return null;
+                  }
+
+                  const isSelected = el.id === selectedElementId && !isPlaying;
 
                   return (
-                    <div
-                      key={el.id}
-                      onClick={e => {
-                        if (el.locked) {
+                    <React.Fragment key={el.id}>
+                      {/* CONNECTING MOTION PATH ARROW BETWEEN CAMERA BOX 1 & BOX 2 */}
+                      {el.type === 'camera' && el.hasCameraMotion && !isCameraActive && !isPlaying && (
+                        <svg className="absolute inset-0 w-full h-full pointer-events-none z-40 overflow-visible">
+                          <defs>
+                            <marker
+                              id={`cam-motion-arrow-${el.id}`}
+                              viewBox="0 0 10 10"
+                              refX="7"
+                              refY="5"
+                              markerWidth="6"
+                              markerHeight="6"
+                              orient="auto-start-reverse"
+                            >
+                              <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#10B981" />
+                            </marker>
+                          </defs>
+                          <line
+                            x1={`${el.x}%`}
+                            y1={`${el.y}%`}
+                            x2={`${el.cameraTargetX ?? Math.min(95, el.x + 6)}%`}
+                            y2={`${el.cameraTargetY ?? Math.min(95, el.y + 6)}%`}
+                            stroke="#10B981"
+                            strokeWidth="2"
+                            strokeDasharray="4 4"
+                            markerEnd={`url(#cam-motion-arrow-${el.id})`}
+                            opacity="0.85"
+                          />
+                        </svg>
+                      )}
+
+                      <div
+                        key={el.id}
+                        onClick={e => {
+                          if (el.locked) {
+                            e.stopPropagation();
+                            return;
+                          }
                           e.stopPropagation();
-                          return;
-                        }
-                        e.stopPropagation();
-                        onSelectElement(el.id);
-                      }}
-                      onPointerDown={e => {
-                        if (el.locked) {
-                          e.stopPropagation();
-                          return;
-                        }
-                        handleElementPointerDown(e, el);
-                      }}
+                          onSelectElement(el.id);
+                          if (el.type === 'camera') {
+                            setSelectedCameraBox('start');
+                          }
+                        }}
+                        onPointerDown={e => {
+                          if (el.locked) {
+                            e.stopPropagation();
+                            return;
+                          }
+                          if (el.type === 'camera') {
+                            setSelectedCameraBox('start');
+                          }
+                          handleElementPointerDown(e, el);
+                        }}
                       className={`absolute transition-shadow select-none ${
                         el.locked ? 'cursor-default pointer-events-none' : 'cursor-move touch-none'
                       } ${
-                        !el.locked && isSelected ? 'ring-2 ring-blue-500 z-50' : !el.locked ? 'hover:ring-1 hover:ring-blue-400/50' : ''
+                        el.type === 'camera'
+                          ? ''
+                          : !el.locked && isSelected ? 'ring-2 ring-blue-500 z-50' : !el.locked ? 'hover:ring-1 hover:ring-blue-400/50' : ''
                       }`}
                       style={{
                         left: `${el.x}%`,
@@ -788,26 +1205,38 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
 
                       {/* IMAGE / VIDEO ELEMENT */}
                       {el.type === 'image' && el.mediaUrl && (
-                        <img
-                          src={el.mediaUrl}
-                          alt={el.name}
-                          loading="eager"
-                          decoding="sync"
-                          className={`w-full h-full pointer-events-none select-none ${
-                            el.fitMode === 'contain'
-                              ? 'object-contain'
-                              : el.fitMode === 'fill'
-                              ? 'object-fill'
-                              : el.fitMode === 'cover' || el.isBackground
-                              ? 'object-cover'
-                              : 'object-contain drop-shadow'
-                          }`}
-                        />
+                        <div
+                          className="w-full h-full pointer-events-none"
+                          style={{
+                            transform: el.scaleX === -1 ? 'scaleX(-1)' : undefined,
+                          }}
+                        >
+                          <img
+                            src={el.mediaUrl}
+                            alt={el.name}
+                            loading="eager"
+                            decoding="sync"
+                            className={`w-full h-full pointer-events-none select-none ${
+                              el.fitMode === 'contain'
+                                ? 'object-contain'
+                                : el.fitMode === 'fill'
+                                ? 'object-fill'
+                                : el.fitMode === 'cover' || el.isBackground
+                                ? 'object-cover'
+                                : 'object-contain drop-shadow'
+                            }`}
+                          />
+                        </div>
                       )}
 
                     {/* EFFECT / FILTER ELEMENT */}
                     {el.type === 'effect' && (
-                      <div className="w-full h-full pointer-events-none overflow-hidden relative">
+                      <div
+                        className="w-full h-full pointer-events-none overflow-hidden relative"
+                        style={{
+                          transform: el.scaleX === -1 ? 'scaleX(-1)' : undefined,
+                        }}
+                      >
                         {el.effectType === 'vignette' ? (
                           <div className="absolute inset-0 shadow-[inset_0_0_120px_rgba(0,0,0,0.75)] pointer-events-none" />
                         ) : el.effectType === 'cinema' ? (
@@ -824,19 +1253,31 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                     )}
 
                     {el.type === 'video' && el.mediaUrl && (
-                      <video
-                        src={el.mediaUrl}
-                        autoPlay
-                        loop
-                        muted
-                        playsInline
-                        className="w-full h-full object-cover pointer-events-none rounded-lg shadow-md"
-                      />
+                      <div
+                        className="w-full h-full pointer-events-none"
+                        style={{
+                          transform: el.scaleX === -1 ? 'scaleX(-1)' : undefined,
+                        }}
+                      >
+                        <video
+                          src={el.mediaUrl}
+                          autoPlay
+                          loop
+                          muted
+                          playsInline
+                          className="w-full h-full object-cover pointer-events-none rounded-lg shadow-md"
+                        />
+                      </div>
                     )}
 
                     {/* SPEECH BUBBLE ELEMENT */}
                     {el.type === 'speechBubble' && (
-                      <div className="relative w-full h-full flex items-center justify-center p-2.5 filter drop-shadow-md pointer-events-none">
+                      <div
+                        className="relative w-full h-full flex items-center justify-center p-2.5 filter drop-shadow-md pointer-events-none"
+                        style={{
+                          transform: el.scaleX === -1 ? 'scaleX(-1)' : undefined,
+                        }}
+                      >
                         <div
                           className="w-full h-full rounded-2xl flex items-center justify-center text-center p-2 font-bold leading-snug border-2 border-slate-900 shadow-md transition-all"
                           style={{
@@ -845,7 +1286,14 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                             fontSize: `${el.fontSize || 15}px`,
                           }}
                         >
-                          {el.text || 'Type your dialogue here...'}
+                          <span
+                            style={{
+                              transform: el.scaleX === -1 ? 'scaleX(-1)' : undefined,
+                              display: 'inline-block',
+                            }}
+                          >
+                            {el.text || 'Type your dialogue here...'}
+                          </span>
                         </div>
                         {/* Comic speech bubble triangle tail */}
                         <div
@@ -866,14 +1314,77 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                           color: el.textColor || '#ffffff',
                           fontSize: `${el.fontSize || 22}px`,
                           textShadow: '0 2px 4px rgba(0,0,0,0.8)',
+                          transform: el.scaleX === -1 ? 'scaleX(-1)' : undefined,
                         }}
                       >
                         {el.text || 'Add Text'}
                       </div>
                     )}
 
+                    {/* CAMERA LAYER ELEMENT (16:9 Canvas Ratio, Red border, No text inside) */}
+                    {el.type === 'camera' && !isCameraActive && !isPlaying && (
+                      <div className="w-full h-full box-border border-2 border-red-500 pointer-events-none relative">
+                        {el.hasCameraMotion ? (
+                          <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-red-600 text-white text-[8px] sm:text-[9px] font-bold flex items-center gap-1 shadow-xs tracking-wider">
+                            <span>START (1)</span>
+                            {el.scaleX === -1 && <span>• FLIPPED</span>}
+                          </div>
+                        ) : el.scaleX === -1 ? (
+                          <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-red-600/90 text-white text-[8px] sm:text-[9px] font-bold flex items-center gap-1 shadow-xs tracking-wider">
+                            <FlipHorizontal className="w-2.5 h-2.5" />
+                            <span>FLIPPED</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+
+                    {/* CAMERA LAYER 4 CORNER RESIZE POINTERS */}
+                    {isSelected && !el.locked && el.type === 'camera' && !isCameraActive && !isPlaying && (
+                      <>
+                        {/* Top-Left Corner Handle */}
+                        <div
+                          onPointerDown={e => handleResizeHandlePointerDown(e, el, 'nw')}
+                          className="absolute -top-3 -left-3 sm:-top-2 sm:-left-2 w-6 h-6 sm:w-4 sm:h-4 bg-white border-2 border-red-600 rounded-xs shadow-md cursor-nwse-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                          style={{ touchAction: 'none' }}
+                          title="Resize Camera (Maintains 16:9)"
+                        >
+                          <div className="w-1.5 h-1.5 bg-red-600 rounded-xs pointer-events-none" />
+                        </div>
+
+                        {/* Top-Right Corner Handle */}
+                        <div
+                          onPointerDown={e => handleResizeHandlePointerDown(e, el, 'ne')}
+                          className="absolute -top-3 -right-3 sm:-top-2 sm:-right-2 w-6 h-6 sm:w-4 sm:h-4 bg-white border-2 border-red-600 rounded-xs shadow-md cursor-nesw-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                          style={{ touchAction: 'none' }}
+                          title="Resize Camera (Maintains 16:9)"
+                        >
+                          <div className="w-1.5 h-1.5 bg-red-600 rounded-xs pointer-events-none" />
+                        </div>
+
+                        {/* Bottom-Left Corner Handle */}
+                        <div
+                          onPointerDown={e => handleResizeHandlePointerDown(e, el, 'sw')}
+                          className="absolute -bottom-3 -left-3 sm:-bottom-2 sm:-left-2 w-6 h-6 sm:w-4 sm:h-4 bg-white border-2 border-red-600 rounded-xs shadow-md cursor-nesw-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                          style={{ touchAction: 'none' }}
+                          title="Resize Camera (Maintains 16:9)"
+                        >
+                          <div className="w-1.5 h-1.5 bg-red-600 rounded-xs pointer-events-none" />
+                        </div>
+
+                        {/* Bottom-Right Corner Handle */}
+                        <div
+                          onPointerDown={e => handleResizeHandlePointerDown(e, el, 'se')}
+                          className="absolute -bottom-3 -right-3 sm:-bottom-2 sm:-right-2 w-6 h-6 sm:w-4 sm:h-4 bg-white border-2 border-red-600 rounded-xs shadow-md cursor-nwse-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                          style={{ touchAction: 'none' }}
+                          title="Resize Camera (Maintains 16:9)"
+                        >
+                          <div className="w-1.5 h-1.5 bg-red-600 rounded-xs pointer-events-none" />
+                        </div>
+                      </>
+                    )}
+
                     {/* BOUNDING BOX TRANSFORMS (When Selected and Not Locked) */}
-                    {isSelected && !el.locked && (
+                    {isSelected && !el.locked && el.type !== 'camera' && (
                       <>
                         <div className="absolute -inset-1 border-2 border-blue-500 border-dashed rounded-xs pointer-events-none z-30" />
 
@@ -1018,284 +1529,562 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                       </>
                     )}
                   </div>
-                );
-              });
+
+                  {/* CAMERA TARGET BOX (BOX 2 / END BOX) */}
+                  {el.type === 'camera' && el.hasCameraMotion && !isCameraActive && !isPlaying && (
+                    <div
+                      onClick={e => {
+                        e.stopPropagation();
+                        onSelectElement(el.id);
+                        setSelectedCameraBox('target');
+                      }}
+                      onPointerDown={e => {
+                        if (el.locked) {
+                          e.stopPropagation();
+                          return;
+                        }
+                        setSelectedCameraBox('target');
+                        handleCameraTargetPointerDown(e, el);
+                      }}
+                      className={`absolute transition-shadow select-none ${
+                        el.locked ? 'cursor-default pointer-events-none' : 'cursor-move touch-none'
+                      }`}
+                      style={{
+                        left: `${el.cameraTargetX ?? Math.min(95, el.x + 6)}%`,
+                        top: `${el.cameraTargetY ?? Math.min(95, el.y + 6)}%`,
+                        width: `${el.cameraTargetWidth ?? el.width}%`,
+                        height: `${el.cameraTargetHeight ?? el.height}%`,
+                        transform: 'translate(-50%, -50%)',
+                        zIndex: el.zIndex + 1,
+                        touchAction: 'none',
+                        userSelect: 'none',
+                      }}
+                    >
+                      <div className="w-full h-full box-border border-2 border-emerald-500 pointer-events-none relative">
+                        <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-emerald-600 text-white text-[8px] sm:text-[9px] font-bold flex items-center gap-1 shadow-xs tracking-wider">
+                          <span>END (2)</span>
+                          {(el.cameraTargetScaleX ?? (el.scaleX || 1)) === -1 && <span>• FLIPPED</span>}
+                        </div>
+                      </div>
+
+                      {/* 4 CORNER RESIZE POINTERS FOR BOX 2 */}
+                      {isSelected && !el.locked && (
+                        <>
+                          <div
+                            onPointerDown={e => handleCameraTargetResizeHandlePointerDown(e, el, 'nw')}
+                            className="absolute -top-3 -left-3 sm:-top-2 sm:-left-2 w-6 h-6 sm:w-4 sm:h-4 bg-white border-2 border-emerald-600 rounded-xs shadow-md cursor-nwse-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                            style={{ touchAction: 'none' }}
+                            title="Resize End Box 2 (Maintains 16:9)"
+                          >
+                            <div className="w-1.5 h-1.5 bg-emerald-600 rounded-xs pointer-events-none" />
+                          </div>
+
+                          <div
+                            onPointerDown={e => handleCameraTargetResizeHandlePointerDown(e, el, 'ne')}
+                            className="absolute -top-3 -right-3 sm:-top-2 sm:-right-2 w-6 h-6 sm:w-4 sm:h-4 bg-white border-2 border-emerald-600 rounded-xs shadow-md cursor-nesw-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                            style={{ touchAction: 'none' }}
+                            title="Resize End Box 2 (Maintains 16:9)"
+                          >
+                            <div className="w-1.5 h-1.5 bg-emerald-600 rounded-xs pointer-events-none" />
+                          </div>
+
+                          <div
+                            onPointerDown={e => handleCameraTargetResizeHandlePointerDown(e, el, 'sw')}
+                            className="absolute -bottom-3 -left-3 sm:-bottom-2 sm:-left-2 w-6 h-6 sm:w-4 sm:h-4 bg-white border-2 border-emerald-600 rounded-xs shadow-md cursor-nesw-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                            style={{ touchAction: 'none' }}
+                            title="Resize End Box 2 (Maintains 16:9)"
+                          >
+                            <div className="w-1.5 h-1.5 bg-emerald-600 rounded-xs pointer-events-none" />
+                          </div>
+
+                          <div
+                            onPointerDown={e => handleCameraTargetResizeHandlePointerDown(e, el, 'se')}
+                            className="absolute -bottom-3 -right-3 sm:-bottom-2 sm:-right-2 w-6 h-6 sm:w-4 sm:h-4 bg-white border-2 border-emerald-600 rounded-xs shadow-md cursor-nwse-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                            style={{ touchAction: 'none' }}
+                            title="Resize End Box 2 (Maintains 16:9)"
+                          >
+                            <div className="w-1.5 h-1.5 bg-emerald-600 rounded-xs pointer-events-none" />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </React.Fragment>
+              );
+            });
             })()}
+            </div>
           </div>
         </div>
 
-        {/* Compact Bottom Floating Element Controller (Single-line, Responsive, Fits on 1 line on mobile, without name/icon) */}
-        {selectedElement && !selectedElement.locked && (
+        {/* Top Canvas Setting Bar (Floating right below website header with 1 space gap) */}
+        {selectedElement && !selectedElement.locked && !isPlaying ? (
           <div
             onPointerDown={e => e.stopPropagation()}
-            className="absolute bottom-2 sm:bottom-2.5 left-1/2 -translate-x-1/2 z-30 max-w-[calc(100vw-12px)] sm:max-w-fit px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-full bg-slate-900/95 backdrop-blur-md border border-slate-700/80 shadow-2xl flex items-center space-x-1 sm:space-x-1.5 text-xs text-white select-none whitespace-nowrap overflow-x-auto no-scrollbar pointer-events-auto touch-none"
+            className="absolute top-1 sm:top-1.5 left-1/2 -translate-x-1/2 z-30 max-w-[calc(100vw-12px)] sm:max-w-fit px-2 py-1 sm:py-1 rounded-xl sm:rounded-full bg-slate-900/95 backdrop-blur-md border border-slate-700/80 shadow-2xl flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-xs text-white select-none pointer-events-auto touch-none"
             style={{ touchAction: 'none' }}
           >
-            {/* Directional Nudge Arrows (Rescue off-canvas elements easily) */}
-            <div className="flex items-center space-x-0.5 bg-slate-800/90 rounded px-0.5 py-0.5 border border-slate-700/50 shrink-0">
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  onUpdateElement(selectedElement.id, { x: selectedElement.x - 2 });
-                }}
-                className="p-0.5 sm:p-1 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer"
-                title="Nudge Left 2%"
-              >
-                <ArrowLeft className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-              </button>
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  onUpdateElement(selectedElement.id, { y: selectedElement.y - 2 });
-                }}
-                className="p-0.5 sm:p-1 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer"
-                title="Nudge Up 2%"
-              >
-                <ArrowUp className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-              </button>
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  onUpdateElement(selectedElement.id, { y: selectedElement.y + 2 });
-                }}
-                className="p-0.5 sm:p-1 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer"
-                title="Nudge Down 2%"
-              >
-                <ArrowDown className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-              </button>
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  onUpdateElement(selectedElement.id, { x: selectedElement.x + 2 });
-                }}
-                className="p-0.5 sm:p-1 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer"
-                title="Nudge Right 2%"
-              >
-                <ArrowRight className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-              </button>
-            </div>
-
-            <div className="w-px h-3 bg-slate-700/80 mx-0.5 shrink-0" />
-
-            {/* Size / Zoom Adjusters */}
-            <div className="flex items-center space-x-0.5 sm:space-x-1 shrink-0">
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  onUpdateElement(selectedElement.id, {
-                    width: Math.max(2, Math.round(selectedElement.width * 0.85)),
-                    height: Math.max(2, Math.round(selectedElement.height * 0.85)),
-                  });
-                }}
-                className="w-4 h-4 sm:w-5 sm:h-5 flex items-center justify-center hover:bg-slate-800 rounded-full cursor-pointer text-slate-300 hover:text-white font-bold text-[10px] sm:text-xs"
-                title="Shrink Size (-)"
-              >
-                -
-              </button>
-
-              <span className="font-mono text-[10px] sm:text-[11px] font-bold text-blue-400 min-w-[26px] sm:min-w-[30px] text-center">
-                {Math.round(selectedElement.width)}%
-              </span>
-
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  onUpdateElement(selectedElement.id, {
-                    width: Math.max(2, Math.round(selectedElement.width * 1.2)),
-                    height: Math.max(2, Math.round(selectedElement.height * 1.2)),
-                  });
-                }}
-                className="w-4 h-4 sm:w-5 sm:h-5 flex items-center justify-center hover:bg-slate-800 rounded-full cursor-pointer text-slate-300 hover:text-white font-bold text-[10px] sm:text-xs"
-                title="Enlarge Size (+)"
-              >
-                +
-              </button>
-
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  const defaultW = selectedElement.type === 'character' ? 45 : 30;
-                  const defaultH = selectedElement.type === 'character' ? 75 : 30;
-                  onUpdateElement(selectedElement.id, { width: defaultW, height: defaultH });
-                }}
-                className="text-[9px] sm:text-[10px] text-slate-400 hover:text-white hover:underline cursor-pointer px-0.5 py-0.5"
-                title="Reset size to default"
-              >
-                Reset
-              </button>
-            </div>
-
-            {/* Character Angles: 3/4 Front, Front, 3/4 Back */}
-            {selectedElement.type === 'character' && selectedElement.characterData && (
-              <div className="flex items-center bg-slate-800 p-0.5 rounded border border-slate-700 space-x-0.5 shrink-0">
+            {/* Line 1 on Mobile: Movement & Size & Angles */}
+            <div className="flex items-center justify-center space-x-1 sm:space-x-1.5 flex-nowrap shrink-0 overflow-x-auto no-scrollbar max-w-full">
+              {/* Directional Nudge Arrows (Rescue off-canvas elements easily) */}
+              <div className="flex items-center space-x-0.5 bg-slate-800/90 rounded px-0.5 py-0.5 border border-slate-700/50 shrink-0">
                 <button
                   type="button"
                   onClick={e => {
                     e.stopPropagation();
-                    onUpdateElement(selectedElement.id, {
-                      characterData: {
-                        ...selectedElement.characterData!,
-                        angle: 'threeQuarterFront',
-                      },
-                    });
+                    if (selectedElement.type === 'camera' && selectedElement.hasCameraMotion && selectedCameraBox === 'target') {
+                      onUpdateElement(selectedElement.id, {
+                        cameraTargetX: (selectedElement.cameraTargetX ?? selectedElement.x + 6) - 2,
+                      });
+                    } else {
+                      onUpdateElement(selectedElement.id, { x: selectedElement.x - 2 });
+                    }
                   }}
-                  className={`px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
-                    (selectedElement.characterData.angle || 'threeQuarterFront') === 'threeQuarterFront'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700'
-                  }`}
-                  title="3/4 Front Angle"
+                  className="p-0.5 sm:p-1 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer"
+                  title="Nudge Left 2%"
                 >
-                  3/4 Front
+                  <ArrowLeft className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                 </button>
                 <button
                   type="button"
                   onClick={e => {
                     e.stopPropagation();
-                    onUpdateElement(selectedElement.id, {
-                      characterData: {
-                        ...selectedElement.characterData!,
-                        angle: 'front',
-                      },
-                    });
+                    if (selectedElement.type === 'camera' && selectedElement.hasCameraMotion && selectedCameraBox === 'target') {
+                      onUpdateElement(selectedElement.id, {
+                        cameraTargetY: (selectedElement.cameraTargetY ?? selectedElement.y + 6) - 2,
+                      });
+                    } else {
+                      onUpdateElement(selectedElement.id, { y: selectedElement.y - 2 });
+                    }
                   }}
-                  className={`px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
-                    selectedElement.characterData.angle === 'front'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700'
-                  }`}
-                  title="Front Angle"
+                  className="p-0.5 sm:p-1 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer"
+                  title="Nudge Up 2%"
                 >
-                  Front
+                  <ArrowUp className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                 </button>
                 <button
                   type="button"
                   onClick={e => {
                     e.stopPropagation();
-                    onUpdateElement(selectedElement.id, {
-                      characterData: {
-                        ...selectedElement.characterData!,
-                        angle: 'threeQuarterBack',
-                      },
-                    });
+                    if (selectedElement.type === 'camera' && selectedElement.hasCameraMotion && selectedCameraBox === 'target') {
+                      onUpdateElement(selectedElement.id, {
+                        cameraTargetY: (selectedElement.cameraTargetY ?? selectedElement.y + 6) + 2,
+                      });
+                    } else {
+                      onUpdateElement(selectedElement.id, { y: selectedElement.y + 2 });
+                    }
                   }}
-                  className={`px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
-                    selectedElement.characterData.angle === 'threeQuarterBack'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700'
-                  }`}
-                  title="3/4 Back Angle"
+                  className="p-0.5 sm:p-1 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer"
+                  title="Nudge Down 2%"
                 >
-                  3/4 Back
+                  <ArrowDown className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    if (selectedElement.type === 'camera' && selectedElement.hasCameraMotion && selectedCameraBox === 'target') {
+                      onUpdateElement(selectedElement.id, {
+                        cameraTargetX: (selectedElement.cameraTargetX ?? selectedElement.x + 6) + 2,
+                      });
+                    } else {
+                      onUpdateElement(selectedElement.id, { x: selectedElement.x + 2 });
+                    }
+                  }}
+                  className="p-0.5 sm:p-1 hover:bg-slate-700 rounded text-slate-300 hover:text-white cursor-pointer"
+                  title="Nudge Right 2%"
+                >
+                  <ArrowRight className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                 </button>
               </div>
-            )}
 
-            <div className="w-px h-3 bg-slate-700/80 mx-0.5 shrink-0" />
+              <div className="w-px h-3 bg-slate-700/80 mx-0.5 shrink-0" />
 
-            {/* Quick Delete Element Button (Replaces Properties before Fit Screen) */}
-            <button
-              type="button"
-              onClick={e => {
-                e.stopPropagation();
-                if (selectedElement) {
-                  onDeleteElement(selectedElement.id);
+              {/* Size / Zoom Adjusters */}
+              <div className="flex items-center space-x-0.5 sm:space-x-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    if (selectedElement.type === 'camera' && selectedElement.hasCameraMotion && selectedCameraBox === 'target') {
+                      const curW = selectedElement.cameraTargetWidth ?? selectedElement.width;
+                      const curH = selectedElement.cameraTargetHeight ?? selectedElement.height;
+                      onUpdateElement(selectedElement.id, {
+                        cameraTargetWidth: Math.max(2, Math.round(curW * 0.85)),
+                        cameraTargetHeight: Math.max(2, Math.round(curH * 0.85)),
+                      });
+                    } else {
+                      onUpdateElement(selectedElement.id, {
+                        width: Math.max(2, Math.round(selectedElement.width * 0.85)),
+                        height: Math.max(2, Math.round(selectedElement.height * 0.85)),
+                      });
+                    }
+                  }}
+                  className="w-4 h-4 sm:w-5 sm:h-5 flex items-center justify-center hover:bg-slate-800 rounded-full cursor-pointer text-slate-300 hover:text-white font-bold text-[9px] sm:text-xs"
+                  title="Shrink Size (-)"
+                >
+                  -
+                </button>
+
+                <span className="font-mono text-[9px] sm:text-[11px] font-bold text-blue-400 min-w-[22px] sm:min-w-[30px] text-center">
+                  {Math.round(
+                    selectedElement.type === 'camera' && selectedElement.hasCameraMotion && selectedCameraBox === 'target'
+                      ? (selectedElement.cameraTargetWidth ?? selectedElement.width)
+                      : selectedElement.width
+                  )}%
+                </span>
+
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    if (selectedElement.type === 'camera' && selectedElement.hasCameraMotion && selectedCameraBox === 'target') {
+                      const curW = selectedElement.cameraTargetWidth ?? selectedElement.width;
+                      const curH = selectedElement.cameraTargetHeight ?? selectedElement.height;
+                      onUpdateElement(selectedElement.id, {
+                        cameraTargetWidth: Math.max(2, Math.round(curW * 1.2)),
+                        cameraTargetHeight: Math.max(2, Math.round(curH * 1.2)),
+                      });
+                    } else {
+                      onUpdateElement(selectedElement.id, {
+                        width: Math.max(2, Math.round(selectedElement.width * 1.2)),
+                        height: Math.max(2, Math.round(selectedElement.height * 1.2)),
+                      });
+                    }
+                  }}
+                  className="w-4 h-4 sm:w-5 sm:h-5 flex items-center justify-center hover:bg-slate-800 rounded-full cursor-pointer text-slate-300 hover:text-white font-bold text-[9px] sm:text-xs"
+                  title="Enlarge Size (+)"
+                >
+                  +
+                </button>
+
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    const defaultW = selectedElement.type === 'character' ? 45 : 30;
+                    const defaultH = selectedElement.type === 'character' ? 75 : 30;
+                    if (selectedElement.type === 'camera' && selectedElement.hasCameraMotion && selectedCameraBox === 'target') {
+                      onUpdateElement(selectedElement.id, {
+                        cameraTargetWidth: selectedElement.width,
+                        cameraTargetHeight: selectedElement.height,
+                      });
+                    } else {
+                      onUpdateElement(selectedElement.id, { width: defaultW, height: defaultH });
+                    }
+                  }}
+                  className="text-[8px] sm:text-[10px] text-slate-400 hover:text-white hover:underline cursor-pointer px-0.5 py-0.5"
+                  title="Reset size to default"
+                >
+                  Reset
+                </button>
+              </div>
+
+              {/* Character Angles: 3/4 Front, Front, 3/4 Back */}
+              {selectedElement.type === 'character' && selectedElement.characterData && (
+                <>
+                  <div className="w-px h-3 bg-slate-700/80 mx-0.5 shrink-0" />
+                  <div className="flex items-center bg-slate-800 p-0.5 rounded border border-slate-700 space-x-0.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation();
+                        onUpdateElement(selectedElement.id, {
+                          characterData: {
+                            ...selectedElement.characterData!,
+                            angle: 'threeQuarterFront',
+                          },
+                        });
+                      }}
+                      className={`px-1 sm:px-1.5 py-0.5 rounded text-[8px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
+                        (selectedElement.characterData.angle || 'threeQuarterFront') === 'threeQuarterFront'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-300 hover:text-white hover:bg-slate-700'
+                      }`}
+                      title="3/4 Front Angle"
+                    >
+                      3/4 Front
+                    </button>
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation();
+                        onUpdateElement(selectedElement.id, {
+                          characterData: {
+                            ...selectedElement.characterData!,
+                            angle: 'front',
+                          },
+                        });
+                      }}
+                      className={`px-1 sm:px-1.5 py-0.5 rounded text-[8px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
+                        selectedElement.characterData.angle === 'front'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-300 hover:text-white hover:bg-slate-700'
+                      }`}
+                      title="Front Angle"
+                    >
+                      Front
+                    </button>
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation();
+                        onUpdateElement(selectedElement.id, {
+                          characterData: {
+                            ...selectedElement.characterData!,
+                            angle: 'threeQuarterBack',
+                          },
+                        });
+                      }}
+                      className={`px-1 sm:px-1.5 py-0.5 rounded text-[8px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
+                        selectedElement.characterData.angle === 'threeQuarterBack'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-300 hover:text-white hover:bg-slate-700'
+                      }`}
+                      title="3/4 Back Angle"
+                    >
+                      3/4 Back
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Desktop divider between line 1 and line 2 */}
+            <div className="hidden sm:block w-px h-3 bg-slate-700/80 mx-0.5 shrink-0" />
+
+            {/* Line 2 on Mobile: Actions (Fit Screen, Center, Flip, Rotate, Hand Tool, Delete, Close) - Strictly fits on 1 line on mobile */}
+            <div className="flex items-center justify-center space-x-1 sm:space-x-1.5 flex-nowrap shrink-0 max-w-full">
+              {/* Quick Fit to Screen Button (Icon only on mobile, text on PC) */}
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  onUpdateElement(selectedElement.id, {
+                    x: 50,
+                    y: 50,
+                    width: 100,
+                    height: 100,
+                    rotation: 0,
+                    ...(selectedElement.type === 'image' ? { isBackground: true, fitMode: 'cover' } : {}),
+                  });
+                }}
+                className="flex items-center space-x-1 p-1 sm:px-2 sm:py-0.5 bg-blue-600 hover:bg-blue-500 rounded text-white cursor-pointer shrink-0 font-medium text-[9px] sm:text-[10px] shadow-xs"
+                title="Fit element to 100% canvas screen (auto adjust)"
+              >
+                <Maximize className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                <span className="hidden sm:inline">Fit Screen</span>
+              </button>
+
+              {/* Quick Center Button */}
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  if (selectedElement.type === 'camera' && selectedElement.hasCameraMotion && selectedCameraBox === 'target') {
+                    onUpdateElement(selectedElement.id, { cameraTargetX: 50, cameraTargetY: 50 });
+                  } else {
+                    onUpdateElement(selectedElement.id, { x: 50, y: 50 });
+                  }
+                }}
+                className="p-1 hover:bg-slate-800 rounded text-slate-300 hover:text-white cursor-pointer shrink-0"
+                title="Center element on canvas"
+              >
+                <Crosshair className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+              </button>
+
+              {/* Flip Horizontal */}
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  if (selectedElement.type === 'camera' && selectedElement.hasCameraMotion) {
+                    if (selectedCameraBox === 'target') {
+                      const isTargetFlipped = (selectedElement.cameraTargetScaleX ?? (selectedElement.scaleX || 1)) === -1;
+                      onUpdateElement(selectedElement.id, {
+                        cameraTargetScaleX: isTargetFlipped ? 1 : -1,
+                      });
+                    } else {
+                      onUpdateElement(selectedElement.id, {
+                        scaleX: (selectedElement.scaleX || 1) === 1 ? -1 : 1,
+                      });
+                    }
+                  } else {
+                    onUpdateElement(selectedElement.id, {
+                      scaleX: (selectedElement.scaleX || 1) === 1 ? -1 : 1,
+                    });
+                  }
+                }}
+                className={`p-1 rounded cursor-pointer shrink-0 transition-colors ${
+                  (selectedElement.type === 'camera' && selectedElement.hasCameraMotion
+                    ? (selectedCameraBox === 'target'
+                        ? (selectedElement.cameraTargetScaleX ?? (selectedElement.scaleX || 1)) === -1
+                        : selectedElement.scaleX === -1)
+                    : selectedElement.scaleX === -1)
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'hover:bg-slate-800 text-slate-300 hover:text-white'
+                }`}
+                title={
+                  selectedElement.type === 'camera'
+                    ? selectedElement.hasCameraMotion
+                      ? selectedCameraBox === 'target'
+                        ? 'Flip End Box 2 Horizontal (⇄)'
+                        : 'Flip Start Box 1 Horizontal (⇄)'
+                      : selectedElement.scaleX === -1
+                      ? 'Camera Flipped Horizontal (⇄) - Click to restore'
+                      : 'Flip Camera Horizontal (⇄)'
+                    : selectedElement.scaleX === -1
+                    ? 'Flipped Horizontal (⇄) - Click to restore'
+                    : 'Flip Horizontal (⇄)'
                 }
-              }}
-              className="flex items-center space-x-1 px-1.5 py-0.5 bg-rose-600 hover:bg-rose-500 text-white rounded cursor-pointer shrink-0 font-medium text-[10px] shadow-xs"
-              title="Delete this selected layer"
-            >
-              <Trash2 className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-              <span>Delete</span>
-            </button>
+              >
+                <FlipHorizontal className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+              </button>
 
-            {/* Quick Fit to Screen Button */}
-            <button
-              type="button"
-              onClick={e => {
-                e.stopPropagation();
-                onUpdateElement(selectedElement.id, {
-                  x: 50,
-                  y: 50,
-                  width: 100,
-                  height: 100,
-                  rotation: 0,
-                  ...(selectedElement.type === 'image' ? { isBackground: true, fitMode: 'cover' } : {}),
-                });
-              }}
-              className="flex items-center space-x-1 px-1.5 py-0.5 bg-blue-600 hover:bg-blue-500 rounded text-white cursor-pointer shrink-0 font-medium text-[10px] shadow-xs"
-              title="Fit element to 100% canvas screen (auto adjust)"
-            >
-              <Maximize className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-              <span>Fit Screen</span>
-            </button>
+              {/* Rotate 15° for standard elements, or Camera Motion icon for camera layer */}
+              {selectedElement.type === 'camera' ? (
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    if (selectedElement.hasCameraMotion) {
+                      onUpdateElement(selectedElement.id, {
+                        hasCameraMotion: false,
+                      });
+                      setSelectedCameraBox('start');
+                    } else {
+                      const offset = 6;
+                      const targetW = selectedElement.width;
+                      const targetH = selectedElement.height;
+                      const halfW = targetW / 2;
+                      const halfH = targetH / 2;
+                      const targetX = Math.max(halfW, Math.min(100 - halfW, Math.round(selectedElement.x + offset)));
+                      const targetY = Math.max(halfH, Math.min(100 - halfH, Math.round(selectedElement.y + offset)));
 
-            {/* Quick Center Button */}
-            <button
-              type="button"
-              onClick={e => {
-                e.stopPropagation();
-                onUpdateElement(selectedElement.id, { x: 50, y: 50 });
-              }}
-              className="p-1 hover:bg-slate-800 rounded text-slate-300 hover:text-white cursor-pointer shrink-0"
-              title="Center element on canvas"
-            >
-              <Crosshair className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-            </button>
+                      onUpdateElement(selectedElement.id, {
+                        hasCameraMotion: true,
+                        cameraTargetX: targetX,
+                        cameraTargetY: targetY,
+                        cameraTargetWidth: targetW,
+                        cameraTargetHeight: targetH,
+                        cameraTargetScaleX: selectedElement.scaleX || 1,
+                        cameraMotion: 'linear',
+                      });
+                      setSelectedCameraBox('target');
+                    }
+                  }}
+                  className={`p-1 rounded cursor-pointer shrink-0 transition-colors ${
+                    selectedElement.hasCameraMotion
+                      ? 'bg-red-600 text-white shadow-xs'
+                      : 'hover:bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                  title={
+                    selectedElement.hasCameraMotion
+                      ? 'Camera Motion Active: 2 Boxes (Start ➔ End). Click to disable duplicate motion box'
+                      : 'Camera Motion: Click to duplicate camera box (1 space offset) on canvas'
+                  }
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="16"
+                    height="15"
+                    viewBox="0 0 16 15"
+                    fill="none"
+                    className="w-2.5 h-2.5 sm:w-3 sm:h-3"
+                  >
+                    <circle
+                      opacity="0.67"
+                      cx="4.93334"
+                      cy="9.0349"
+                      r="4.58096"
+                      fill="currentColor"
+                      stroke="#E0E0E0"
+                      strokeWidth="0.704763"
+                    />
+                    <circle
+                      cx="7.60815"
+                      cy="7.2517"
+                      r="4.58096"
+                      fill="currentColor"
+                      stroke="#E0E0E0"
+                      strokeWidth="0.704763"
+                    />
+                    <circle
+                      cx="10.2234"
+                      cy="5.64623"
+                      r="4.58096"
+                      fill="currentColor"
+                      stroke="#E0E0E0"
+                      strokeWidth="0.704763"
+                    />
+                  </svg>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    onUpdateElement(selectedElement.id, {
+                      rotation: ((selectedElement.rotation || 0) + 15) % 360,
+                    });
+                  }}
+                  className="p-1 hover:bg-slate-800 rounded text-slate-300 hover:text-white cursor-pointer shrink-0"
+                  title="Rotate 15° Clockwise"
+                >
+                  <RotateCw className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                </button>
+              )}
 
-            {/* Flip Horizontal */}
-            <button
-              type="button"
-              onClick={e => {
-                e.stopPropagation();
-                onUpdateElement(selectedElement.id, {
-                  scaleX: (selectedElement.scaleX || 1) === 1 ? -1 : 1,
-                });
-              }}
-              className="p-1 hover:bg-slate-800 rounded text-slate-300 hover:text-white cursor-pointer shrink-0"
-              title="Flip Horizontal (⇄)"
-            >
-              <FlipHorizontal className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-            </button>
+              <div className="w-px h-3 bg-slate-700/80 mx-0.5 shrink-0" />
 
-            {/* Rotate 15° */}
-            <button
-              type="button"
-              onClick={e => {
-                e.stopPropagation();
-                onUpdateElement(selectedElement.id, {
-                  rotation: ((selectedElement.rotation || 0) + 15) % 360,
-                });
-              }}
-              className="p-1 hover:bg-slate-800 rounded text-slate-300 hover:text-white cursor-pointer shrink-0"
-              title="Rotate 15° Clockwise"
-            >
-              <RotateCw className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-            </button>
+              {/* Hand Tool (Pan Canvas) - Icon only */}
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  setIsPanMode(!isPanMode);
+                }}
+                className={`p-1 rounded cursor-pointer shrink-0 transition-colors ${
+                  isPanActive
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'hover:bg-slate-800 text-slate-300 hover:text-white'
+                }`}
+                title="Hand Tool (Pan Canvas) - Hold Space or drag to move view"
+              >
+                <Hand className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+              </button>
 
-            <div className="w-px h-3 bg-slate-700/80 mx-0.5 shrink-0" />
+              {/* Quick Delete Element Button (Icon only on mobile, text on PC) */}
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  if (selectedElement) {
+                    onDeleteElement(selectedElement.id);
+                  }
+                }}
+                className="flex items-center space-x-1 p-1 sm:px-2 sm:py-0.5 bg-rose-600 hover:bg-rose-500 text-white rounded cursor-pointer shrink-0 font-medium text-[9px] sm:text-[10px] shadow-xs"
+                title="Delete this selected layer"
+              >
+                <Trash2 className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                <span className="hidden sm:inline">Delete</span>
+              </button>
 
-            {/* Close / Deselect (✕) */}
-            <button
-              type="button"
-              onClick={e => {
-                e.stopPropagation();
-                onSelectElement(null);
-              }}
-              className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white cursor-pointer shrink-0"
-              title="Close / Deselect Element (✕)"
-            >
-              <X className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-            </button>
+              {/* Close / Deselect (✕) */}
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  onSelectElement(null);
+                }}
+                className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white cursor-pointer shrink-0"
+                title="Close / Deselect Element (✕)"
+              >
+                <X className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+              </button>
+            </div>
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* FLOATING PLAYBACK & VIEW CONTROL BAR (Professional Polish clean studio theme) */}
@@ -1349,13 +2138,48 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
             <span className="text-[11px] hidden xl:inline font-medium">Properties</span>
           </button>
 
+          {/* Camera Layer Button: Adds a 16:9 Camera Layer to Timeline */}
           <button
-            title="Add Camera Motion"
-            className="flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+            onClick={() => onAddCameraLayer?.()}
+            title="Add 16:9 Camera Layer to Timeline (Splittable, 4 Corner Resize)"
+            className={`flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 rounded transition-all cursor-pointer ${
+              selectedElement?.type === 'camera' || scene.elements.some(e => e.type === 'camera')
+                ? 'bg-red-50 text-red-600 font-semibold border border-red-200 hover:bg-red-100'
+                : 'hover:bg-slate-100 text-slate-600 hover:text-slate-900'
+            }`}
           >
-            <Camera className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            <Camera className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-red-600" />
             <span className="text-[11px] hidden xl:inline">Camera</span>
+            {scene.elements.some(e => e.type === 'camera') && (
+              <span className="w-1.5 h-1.5 rounded-full bg-red-600 hidden xl:inline" />
+            )}
           </button>
+
+          {/* Camera View / Preview Mode Toggle (Allows framing preview even when paused) */}
+          {hasCameraLayer && (
+            <button
+              onClick={() => setIsPreviewCameraMode(!isPreviewCameraMode)}
+              title={
+                isPreviewCameraMode
+                  ? "Exit Camera Framing Preview (Show Full Canvas)"
+                  : "Preview Camera Box Framing (Zoom & Screen-Fit)"
+              }
+              className={`flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 rounded transition-all cursor-pointer ${
+                isPreviewCameraMode
+                  ? 'bg-red-600 text-white font-semibold shadow-xs'
+                  : 'bg-red-50 hover:bg-red-100 text-red-700 font-semibold border border-red-200'
+              }`}
+            >
+              {isPreviewCameraMode ? (
+                <EyeOff className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+              ) : (
+                <Eye className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-red-600" />
+              )}
+              <span className="text-[11px] hidden xl:inline">
+                {isPreviewCameraMode ? 'Framed' : 'Preview'}
+              </span>
+            </button>
+          )}
         </div>
 
         {/* Center Transport Controls: Jump to Start, -5s, Play/Pause, Scene, +5s, Timecode */}

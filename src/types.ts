@@ -108,7 +108,7 @@ export interface CharacterModel {
   isCustom?: boolean;
 }
 
-export type StageElementType = 'character' | 'image' | 'video' | 'text' | 'speechBubble' | 'shape' | 'effect';
+export type StageElementType = 'character' | 'image' | 'video' | 'text' | 'speechBubble' | 'shape' | 'effect' | 'camera';
 
 export interface StageElement {
   id: string;
@@ -143,6 +143,15 @@ export interface StageElement {
   textColor?: string;
   bubbleStyle?: 'speech' | 'thought' | 'shout' | 'caption';
   bubbleColor?: string;
+
+  // For camera
+  cameraMotion?: 'smooth' | 'cut' | 'linear';
+  hasCameraMotion?: boolean;
+  cameraTargetX?: number;
+  cameraTargetY?: number;
+  cameraTargetWidth?: number;
+  cameraTargetHeight?: number;
+  cameraTargetScaleX?: number;
   
   // Animation track timing & track line position
   startTime: number; // in seconds
@@ -202,6 +211,7 @@ export interface BackgroundAsset {
   thumbnail?: string;
   width?: number;
   height?: number;
+  duration?: number; // In seconds (especially for animated GIFs)
   deleteUrl?: string;
   imgbbId?: string;
   createdAt: number;

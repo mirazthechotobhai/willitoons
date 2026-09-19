@@ -291,6 +291,24 @@ export const STOCK_BACKGROUNDS: MediaAsset[] = [
     `),
     thumbnail: '🎪',
   },
+  {
+    id: 'gif-sparkle-stars',
+    name: 'Sparkle Magical Stars.gif',
+    type: 'image',
+    category: 'Animated GIF',
+    duration: 3.5,
+    url: 'data:image/gif;base64,R0lGODlhEAAQAPIAAP///wAAAMLCwkJCQgAAACH/C05FVFNDQVBFMi4wAwEAAAAh/wtYTVAgRGF0YVhNUDw/eHBhY2tldCBiZWdpbj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDxyZGY6UkRGIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5vcmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyI+IDxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiIHhtbG5zOnhtcD0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wLyIgeG1wOkNyZWF0b3JUb29sPSJHUEhPRU5JWCIvPiA8L3JkZjpSREY+IDw/eHBhY2tldCBlbmQ9InIiPz4BACwAAAAAEAAQAAADMwi63P4wykmrvTjrzbv/YCiOZGmeaKqubOt+wCS7dH3X9E7j+M4P/A/h7T8cEgnD4dBYBAAh+QQFAAACACwAAAAAEAAQAAADMgi63P4wykmrvTjrzbv/YCiOZGmeaKqubOt+8Ci7dn3X+E3j+P4P/A8g8D8cEomEYtFYBAAh+QQFAAACACwAAAAAEAAQAAADMgi63P4wykmrvTjrzbv/YCiOZGmeaKqubOt+8Ci7dn3X+E3j+P4P/A8g8D8cEomEYtFYBAAh+QQFAAACACwAAAAAEAAQAAADMwi63P4wykmrvTjrzbv/YCiOZGmeaKqubOt+wCS7dH3X9E7j+M4P/A/h7T8cEgnD4dBYBAAh+QQJAAACACwAAAAAEAAQAAADMwi63P4wykmrvTjrzbv/YCiOZGmeaKqubOt+wCS7dH3X9E7j+M4P/A/h7T8cEgnD4dBYBAA7',
+    thumbnail: '✨',
+  },
+  {
+    id: 'gif-fire-energy',
+    name: 'Anime Fire Flame Aura.gif',
+    type: 'image',
+    category: 'Animated GIF',
+    duration: 4.8,
+    url: 'data:image/gif;base64,R0lGODlhEAAQAPIAAP///wAAAMLCwkJCQgAAACH/C05FVFNDQVBFMi4wAwEAAAAh/wtYTVAgRGF0YVhNUDw/eHBhY2tldCBiZWdpbj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDxyZGY6UkRGIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5vcmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyI+IDxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiIHhtbG5zOnhtcD0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wLyIgeG1wOkNyZWF0b3JUb29sPSJHUEhPRU5JWCIvPiA8L3JkZjpSREY+IDw/eHBhY2tldCBlbmQ9InIiPz4BACwAAAAAEAAQAAADMwi63P4wykmrvTjrzbv/YCiOZGmeaKqubOt+wCS7dH3X9E7j+M4P/A/h7T8cEgnD4dBYBAAh+QQFAAACACwAAAAAEAAQAAADMgi63P4wykmrvTjrzbv/YCiOZGmeaKqubOt+8Ci7dn3X+E3j+P4P/A8g8D8cEomEYtFYBAAh+QQFAAACACwAAAAAEAAQAAADMgi63P4wykmrvTjrzbv/YCiOZGmeaKqubOt+8Ci7dn3X+E3j+P4P/A8g8D8cEomEYtFYBAAh+QQFAAACACwAAAAAEAAQAAADMwi63P4wykmrvTjrzbv/YCiOZGmeaKqubOt+wCS7dH3X9E7j+M4P/A/h7T8cEgnD4dBYBAAh+QQJAAACACwAAAAAEAAQAAADMwi63P4wykmrvTjrzbv/YCiOZGmeaKqubOt+wCS7dH3X9E7j+M4P/A/h7T8cEgnD4dBYBAA7',
+    thumbnail: '🔥',
+  },
 ];
 
 // High quality synthetic web-audio tone generators for cartoon sound effects & music

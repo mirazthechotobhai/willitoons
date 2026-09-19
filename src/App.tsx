@@ -377,21 +377,29 @@ export default function App() {
   };
 
   const handleDeleteElement = (id: string) => {
-    setScenes(prevScenes =>
-      prevScenes.map((sc, idx) => {
+    setScenes(prevScenes => {
+      const updated = prevScenes.map((sc, idx) => {
         if (idx !== activeSceneIndex) return sc;
         return {
           ...sc,
           elements: sc.elements.filter(el => el.id !== id),
         };
-      })
-    );
-    if (selectedElementId === id) handleCloseInspector();
+      });
+      pushHistorySnapshot(updated);
+      return updated;
+    });
+    if (selectedElementId === id) {
+      setSelectedElementId(null);
+      handleCloseInspector();
+    }
   };
 
-  const handleDuplicateElement = (id: string) => {
+  const handleDuplicateElement = (id: string, atStartTime?: number, targetTrackIndex?: number) => {
     const target = activeScene.elements.find(el => el.id === id);
     if (!target) return;
+
+    const newStart = atStartTime !== undefined ? Math.max(0, atStartTime) : target.startTime;
+    const newTrack = targetTrackIndex !== undefined ? targetTrackIndex : target.trackIndex;
 
     const duplicated: StageElement = {
       ...target,
@@ -400,6 +408,8 @@ export default function App() {
       x: Math.min(85, target.x + 5),
       y: Math.min(85, target.y + 5),
       zIndex: target.zIndex + 1,
+      startTime: newStart,
+      trackIndex: newTrack,
     };
 
     setScenes(prevScenes =>
@@ -503,16 +513,50 @@ export default function App() {
   };
 
   const handleDeleteAudioTrack = (id: string) => {
-    if (selectedAudioId === id) handleCloseInspector();
-    setScenes(prev =>
-      prev.map((sc, idx) => {
+    if (selectedAudioId === id) {
+      setSelectedAudioId(null);
+      handleCloseInspector();
+    }
+    setScenes(prev => {
+      const updated = prev.map((sc, idx) => {
         if (idx !== activeSceneIndex) return sc;
         return {
           ...sc,
           audioTracks: sc.audioTracks.filter(tr => tr.id !== id),
         };
-      })
-    );
+      });
+      pushHistorySnapshot(updated);
+      return updated;
+    });
+  };
+
+  const handleDuplicateAudioTrack = (id: string, atStartTime?: number, targetTrackIndex?: number) => {
+    const target = activeScene.audioTracks?.find(tr => tr.id === id);
+    if (!target) return;
+
+    const newStart = atStartTime !== undefined ? Math.max(0, atStartTime) : target.startTime;
+    const newTrack = targetTrackIndex !== undefined ? targetTrackIndex : target.trackIndex;
+
+    const duplicated: AudioTrackItem = {
+      ...target,
+      id: `audio-${Date.now()}`,
+      name: `${target.name} Copy`,
+      startTime: newStart,
+      trackIndex: newTrack,
+    };
+
+    setScenes(prevScenes => {
+      const updated = prevScenes.map((sc, idx) => {
+        if (idx !== activeSceneIndex) return sc;
+        return {
+          ...sc,
+          audioTracks: [...(sc.audioTracks || []), duplicated],
+        };
+      });
+      pushHistorySnapshot(updated);
+      return updated;
+    });
+    handleSelectAudio(duplicated.id);
   };
 
   // --- SCENE MUTATION HANDLERS ---
@@ -529,7 +573,9 @@ export default function App() {
       elements: [],
       audioTracks: [],
     };
-    setScenes([...scenes, newScene]);
+    const updated = [...scenes, newScene];
+    setScenes(updated);
+    pushHistorySnapshot(updated);
     setActiveSceneIndex(scenes.length);
     setCurrentTime(0);
   };
@@ -538,9 +584,86 @@ export default function App() {
     if (scenes.length <= 1) return;
     const filtered = scenes.filter((_, i) => i !== index);
     setScenes(filtered);
+    pushHistorySnapshot(filtered);
     setActiveSceneIndex(Math.max(0, index - 1));
     setCurrentTime(0);
+    setSelectedElementId(null);
+    setSelectedAudioId(null);
   };
+
+  // Keyboard shortcut for Delete / Backspace (Delete selected element/audio, layer under playhead, or active scene)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target as HTMLElement)?.isContentEditable ||
+        isCharacterStudioOpen ||
+        isExportModalOpen ||
+        isVoiceoverModalOpen
+      ) {
+        return;
+      }
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedElementId) {
+          e.preventDefault();
+          handleDeleteElement(selectedElementId);
+        } else if (selectedAudioId) {
+          e.preventDefault();
+          handleDeleteAudioTrack(selectedAudioId);
+        } else {
+          const currentSc = scenes[activeSceneIndex];
+          const elUnderPlayhead = currentSc?.elements.find(
+            el => currentTime >= el.startTime && currentTime <= el.startTime + el.duration
+          );
+          if (elUnderPlayhead) {
+            e.preventDefault();
+            handleDeleteElement(elUnderPlayhead.id);
+          } else if (scenes.length > 1) {
+            e.preventDefault();
+            handleDeleteScene(activeSceneIndex);
+          }
+        }
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+        // Duplicate selected layer/audio or element under playhead at playhead position on same line
+        e.preventDefault();
+        const currentSc = scenes[activeSceneIndex];
+        if (selectedElementId) {
+          const el = currentSc?.elements.find(item => item.id === selectedElementId);
+          handleDuplicateElement(selectedElementId, currentTime, el?.trackIndex);
+        } else if (selectedAudioId) {
+          const aud = currentSc?.audioTracks?.find(item => item.id === selectedAudioId);
+          handleDuplicateAudioTrack(selectedAudioId, currentTime, aud?.trackIndex);
+        } else {
+          const elUnderPlayhead = currentSc?.elements.find(
+            el => currentTime >= el.startTime && currentTime <= el.startTime + el.duration
+          );
+          const audUnderPlayhead = !elUnderPlayhead
+            ? currentSc?.audioTracks?.find(
+                at => currentTime >= at.startTime && currentTime <= at.startTime + at.duration
+              )
+            : null;
+          if (elUnderPlayhead) {
+            handleDuplicateElement(elUnderPlayhead.id, currentTime, elUnderPlayhead.trackIndex);
+          } else if (audUnderPlayhead) {
+            handleDuplicateAudioTrack(audUnderPlayhead.id, currentTime, audUnderPlayhead.trackIndex);
+          }
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    selectedElementId,
+    selectedAudioId,
+    scenes,
+    activeSceneIndex,
+    currentTime,
+    isCharacterStudioOpen,
+    isExportModalOpen,
+    isVoiceoverModalOpen,
+  ]);
 
   const handleUpdateScene = (index: number, updates: Partial<Scene>) => {
     setScenes(prevScenes =>
@@ -977,6 +1100,8 @@ export default function App() {
             onSelectScene={idx => {
               setActiveSceneIndex(idx);
               setCurrentTime(0);
+              setSelectedElementId(null);
+              setSelectedAudioId(null);
             }}
             onAddScene={handleAddScene}
             onDeleteScene={handleDeleteScene}
@@ -998,6 +1123,7 @@ export default function App() {
             onChangeZoomScale={setZoomScale}
             onUpdateAudioTrack={handleUpdateAudioTrack}
             onDeleteAudioTrack={handleDeleteAudioTrack}
+            onDuplicateAudioTrack={handleDuplicateAudioTrack}
             onUndo={handleUndo}
             onRedo={handleRedo}
             canUndo={historyIndex > 0}

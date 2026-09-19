@@ -109,9 +109,10 @@ interface TimelineProps {
   onSelectAudio?: (id: string | null) => void;
   onUpdateElement: (id: string, updates: Partial<StageElement>) => void;
   onDeleteElement: (id: string) => void;
-  onDuplicateElement?: (id: string) => void;
+  onDuplicateElement?: (id: string, atStartTime?: number, targetTrackIndex?: number) => void;
   onUpdateAudioTrack: (id: string, updates: Partial<AudioTrackItem>) => void;
   onDeleteAudioTrack: (id: string) => void;
+  onDuplicateAudioTrack?: (id: string, atStartTime?: number, targetTrackIndex?: number) => void;
   onAddElement?: (element: StageElement) => void;
   onAddAudioTrack?: (track: AudioTrackItem) => void;
   isPlaying?: boolean;
@@ -149,6 +150,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   onDuplicateElement,
   onUpdateAudioTrack,
   onDeleteAudioTrack,
+  onDuplicateAudioTrack,
   onAddElement,
   onAddAudioTrack,
   isPlaying = false,
@@ -420,7 +422,8 @@ export const Timeline: React.FC<TimelineProps> = ({
     window.addEventListener('touchend', onTouchEnd);
   };
 
-  // Handle Scrubbing on Ruler & Tracks (Touch & Mouse for ALL devices) with magnetic snap
+  // Handle Scrubbing on Ruler bar (Touch & Mouse for ALL devices) with magnetic snap
+  // Clicking or dragging anywhere on the time ruler immediately moves the red playhead line.
   const handleRulerPointerDown = (e: React.PointerEvent) => {
     if (!rulerRef.current) return;
     if (e.button !== 0 && e.pointerType === 'mouse') return;
@@ -448,6 +451,66 @@ export const Timeline: React.FC<TimelineProps> = ({
     const onPointerMove = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return;
       moveEvent.preventDefault();
+      const moveX = moveEvent.clientX - rect.left;
+      const movePct = Math.max(0, Math.min(1, moveX / rect.width));
+      const moveRawTime = movePct * duration;
+
+      const { snappedTime: moveSnappedTime, isSnapped: moveIsSnapped } = getSnapTime(moveRawTime, 14);
+      if (moveIsSnapped) {
+        setActiveSnapTime(moveSnappedTime);
+        onSeek(moveSnappedTime);
+      } else {
+        setActiveSnapTime(null);
+        onSeek(Number(moveRawTime.toFixed(3)));
+      }
+    };
+
+    const onPointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      try {
+        if (target.hasPointerCapture(pointerId)) {
+          target.releasePointerCapture(pointerId);
+        }
+      } catch (err) {}
+      setIsScrubbing(false);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+  };
+
+  // Handle Scrubbing on Tracks: require dragging so clicking on layer rows does NOT jump playhead
+  const handleTrackPointerDown = (e: React.PointerEvent) => {
+    if (!rulerRef.current) return;
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    const rect = rulerRef.current.getBoundingClientRect();
+    const startX = e.clientX;
+    const DRAG_THRESHOLD = 5;
+    let hasMovedBeyondThreshold = false;
+
+    const target = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    try {
+      target.setPointerCapture(pointerId);
+    } catch (err) {}
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
+
+      if (!hasMovedBeyondThreshold) {
+        if (Math.abs(moveEvent.clientX - startX) > DRAG_THRESHOLD) {
+          hasMovedBeyondThreshold = true;
+          setIsScrubbing(true);
+        } else {
+          return;
+        }
+      }
+
       const moveX = moveEvent.clientX - rect.left;
       const movePct = Math.max(0, Math.min(1, moveX / rect.width));
       const moveRawTime = movePct * duration;
@@ -1204,6 +1267,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       | 'moveToNewTrackAbove'
       | 'moveToNewTrackBelow'
       | 'split'
+      | 'duplicate'
       | 'delete',
     explicitTrackIdx?: number
   ) => {
@@ -1229,6 +1293,20 @@ export const Timeline: React.FC<TimelineProps> = ({
 
     const targetTrack = unifiedTracks[targetTrackIdx];
     if (!targetTrack) return;
+
+    // If duplicating, duplicate the clip under playhead or selected clip or first clip on this track at playhead position on same track
+    if (action === 'duplicate') {
+      const clipUnderPlayhead = targetTrack.clips.find(c => currentTime >= c.startTime && currentTime <= c.startTime + c.duration);
+      const targetClip = clipUnderPlayhead || (id ? targetTrack.clips.find(c => c.id === id) : null) || targetTrack.clips[0];
+      if (targetClip) {
+        handleDuplicateTarget({
+          id: targetClip.id,
+          kind: targetClip.kind,
+          trackIndex: targetTrack.trackIndex,
+        });
+      }
+      return;
+    }
 
     // If deleting, delete all clips on this entire track row (all split parts)
     if (action === 'delete') {
@@ -1448,6 +1526,15 @@ export const Timeline: React.FC<TimelineProps> = ({
     setEditingNameId(null);
   };
 
+  // Duplicate target layer/cut part/audio at current playhead position on the exact same track
+  const handleDuplicateTarget = (target: { id: string; kind: 'element' | 'audio'; trackIndex?: number }) => {
+    if (target.kind === 'element') {
+      onDuplicateElement?.(target.id, currentTime, target.trackIndex);
+    } else {
+      onDuplicateAudioTrack?.(target.id, currentTime, target.trackIndex);
+    }
+  };
+
   // Build unified tracks ordered by trackIndex ascending (0 = top row)
   const unifiedTracks: UnifiedTrackItem[] = useMemo(() => {
     const rawClips: UnifiedClipItem[] = [];
@@ -1596,10 +1683,187 @@ export const Timeline: React.FC<TimelineProps> = ({
           >
             <Plus className="w-3.5 h-3.5 text-blue-400" />
           </button>
+
+          {/* Red Delete Button: deletes selected layer / cut part / audio / or current scene */}
+          {(() => {
+            const activeEl = currentScene.elements.find(el => el.id === selectedElementId);
+            const activeAud = currentScene.audioTracks?.find(at => at.id === selectedAudioId);
+            const elUnderPlayhead = !activeEl && !activeAud
+              ? currentScene.elements.find(el => currentTime >= el.startTime && currentTime <= el.startTime + el.duration)
+              : null;
+            const audUnderPlayhead = !activeEl && !activeAud && !elUnderPlayhead
+              ? currentScene.audioTracks?.find(at => currentTime >= at.startTime && currentTime <= at.startTime + at.duration)
+              : null;
+
+            const targetToDelete = activeEl || activeAud || elUnderPlayhead || audUnderPlayhead;
+            const canDeleteScene = !targetToDelete && scenes.length > 1;
+            const canDelete = Boolean(targetToDelete || canDeleteScene);
+
+            const handleDelete = () => {
+              if (activeEl) {
+                onDeleteElement(activeEl.id);
+                onSelectElement(null);
+              } else if (activeAud) {
+                onDeleteAudioTrack(activeAud.id);
+                onSelectAudio?.(null);
+              } else if (elUnderPlayhead) {
+                onDeleteElement(elUnderPlayhead.id);
+                onSelectElement(null);
+              } else if (audUnderPlayhead) {
+                onDeleteAudioTrack(audUnderPlayhead.id);
+                onSelectAudio?.(null);
+              } else if (scenes.length > 1) {
+                onDeleteScene(activeSceneIndex);
+              }
+            };
+
+            const title = activeEl
+              ? `Delete selected layer / cut piece: "${activeEl.name}"`
+              : activeAud
+              ? `Delete selected audio: "${activeAud.name}"`
+              : elUnderPlayhead
+              ? `Delete layer under playhead: "${elUnderPlayhead.name}"`
+              : audUnderPlayhead
+              ? `Delete audio under playhead: "${audUnderPlayhead.name}"`
+              : scenes.length > 1
+              ? `Delete current scene (${scenes[activeSceneIndex]?.name || `Scene ${activeSceneIndex + 1}`})`
+              : 'Select a layer, cut piece, or audio track to delete';
+
+            return (
+              <button
+                onClick={handleDelete}
+                disabled={!canDelete}
+                title={title}
+                className={`flex items-center justify-center p-1.5 rounded border transition-all shrink-0 ${
+                  canDelete
+                    ? 'bg-red-500/15 hover:bg-red-500/30 text-red-500 hover:text-red-400 border-red-500/40 hover:border-red-500/60 cursor-pointer active:scale-95 shadow-sm'
+                    : 'bg-[#181d28] text-red-500/40 border-red-500/20 opacity-40 cursor-not-allowed'
+                }`}
+              >
+                <Trash2 className="w-3.5 h-3.5 text-red-500" />
+              </button>
+            );
+          })()}
+
+          {/* Duplicate Button: duplicates selected layer / cut part / audio / or layer under playhead at playhead's position on the same track */}
+          {(() => {
+            const activeEl = currentScene.elements.find(el => el.id === selectedElementId);
+            const activeAud = currentScene.audioTracks?.find(at => at.id === selectedAudioId);
+            const elUnderPlayhead = !activeEl && !activeAud
+              ? currentScene.elements.find(el => currentTime >= el.startTime && currentTime <= el.startTime + el.duration)
+              : null;
+            const audUnderPlayhead = !activeEl && !activeAud && !elUnderPlayhead
+              ? currentScene.audioTracks?.find(at => currentTime >= at.startTime && currentTime <= at.startTime + at.duration)
+              : null;
+
+            const targetToDuplicate = activeEl
+              ? { id: activeEl.id, kind: 'element' as const, name: activeEl.name, trackIndex: activeEl.trackIndex }
+              : activeAud
+              ? { id: activeAud.id, kind: 'audio' as const, name: activeAud.name, trackIndex: activeAud.trackIndex }
+              : elUnderPlayhead
+              ? { id: elUnderPlayhead.id, kind: 'element' as const, name: elUnderPlayhead.name, trackIndex: elUnderPlayhead.trackIndex }
+              : audUnderPlayhead
+              ? { id: audUnderPlayhead.id, kind: 'audio' as const, name: audUnderPlayhead.name, trackIndex: audUnderPlayhead.trackIndex }
+              : null;
+
+            const canDuplicate = Boolean(targetToDuplicate);
+
+            const handleDuplicate = () => {
+              if (targetToDuplicate) {
+                handleDuplicateTarget(targetToDuplicate);
+              }
+            };
+
+            const title = targetToDuplicate
+              ? `Duplicate "${targetToDuplicate.name}" at playhead position (${currentTime.toFixed(2)}s) on same line`
+              : 'Select a layer, cut piece, or place playhead over item to duplicate at current position';
+
+            return (
+              <button
+                onClick={handleDuplicate}
+                disabled={!canDuplicate}
+                title={title}
+                className={`flex items-center justify-center p-1.5 rounded border transition-all shrink-0 ${
+                  canDuplicate
+                    ? 'bg-blue-500/15 hover:bg-blue-500/30 text-blue-400 hover:text-blue-300 border-blue-500/40 hover:border-blue-500/60 cursor-pointer active:scale-95 shadow-sm'
+                    : 'bg-[#181d28] text-slate-600 border-slate-700/30 opacity-40 cursor-not-allowed'
+                }`}
+              >
+                <Copy className="w-3.5 h-3.5" />
+              </button>
+            );
+          })()}
         </div>
 
-        {/* Right Tools: Lock & Collapse */}
-        <div className="flex items-center space-x-2 text-slate-400">
+        {/* Right Tools: Zoom (- + 100%), Lock & Collapse */}
+        <div className="flex items-center space-x-1 sm:space-x-2 text-slate-400">
+          {/* Timeline Zoom: - and + with 100% display to the left of lock icon */}
+          <div className="flex items-center space-x-0.5 sm:space-x-1 px-1 sm:px-1.5 py-0.5 bg-[#10141c] rounded border border-[#242b3a]">
+            <button
+              onClick={() => {
+                let nextZoom: number;
+                if (timelineZoom > 0.25) {
+                  nextZoom = Math.max(0.25, Math.round((timelineZoom - 0.25) * 100) / 100);
+                } else if (timelineZoom > 0.05) {
+                  nextZoom = Math.max(0.05, Math.round((timelineZoom - 0.05) * 100) / 100);
+                } else {
+                  nextZoom = Math.max(0.01, Math.round((timelineZoom - 0.01) * 100) / 100);
+                }
+                setTimelineZoom(nextZoom);
+              }}
+              className="p-0.5 sm:p-1 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
+              title="Zoom Out (-) - Down to 1%"
+            >
+              <ZoomOut className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Slider (Visible on md desktop screens) */}
+            <input
+              type="range"
+              min="0.01"
+              max="5"
+              step="0.01"
+              value={timelineZoom}
+              onChange={e => setTimelineZoom(parseFloat(e.target.value))}
+              className="hidden md:inline-block w-12 lg:w-16 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+              title={`Timeline Zoom: ${Math.round(timelineZoom * 100)}%`}
+            />
+
+            <button
+              onClick={() => {
+                let nextZoom: number;
+                if (timelineZoom < 0.05) {
+                  nextZoom = Math.min(0.05, Math.round((timelineZoom + 0.01) * 100) / 100);
+                } else if (timelineZoom < 0.25) {
+                  nextZoom = Math.min(0.25, Math.round((timelineZoom + 0.05) * 100) / 100);
+                } else {
+                  nextZoom = Math.min(5, Math.round((timelineZoom + 0.25) * 100) / 100);
+                }
+                setTimelineZoom(nextZoom);
+              }}
+              className="p-0.5 sm:p-1 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
+              title="Zoom In (+)"
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Zoom % badge: ALWAYS visible beside -+ on all devices */}
+            <span className="text-[10px] font-mono font-semibold text-blue-400 min-w-[32px] text-center px-1 py-0.2 bg-[#161a24] rounded border border-slate-800">
+              {Math.round(timelineZoom * 100)}%
+            </span>
+          </div>
+
+          {/* Fit to Timeline (100%) */}
+          <button
+            onClick={() => setTimelineZoom(1)}
+            className="p-1 sm:p-1.5 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
+            title="Fit Timeline (100%)"
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+          </button>
+
+          <div className="w-px h-3.5 sm:h-4 bg-slate-700/80 mx-0.5" />
+
           <button
             onClick={() => setIsTimelineLocked(!isTimelineLocked)}
             className="p-1 hover:text-white cursor-pointer transition-colors"
@@ -1709,74 +1973,6 @@ export const Timeline: React.FC<TimelineProps> = ({
               title="Jump to End (Last Layer)"
             >
               <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-
-            {/* Divider after Jump to End - closes the large gap */}
-            <div className="w-px h-3.5 sm:h-4 bg-slate-700/80 mx-0.5" />
-
-            {/* Timeline Zoom: - and + with 100% display right next to Jump to End */}
-            <div className="flex items-center space-x-0.5 sm:space-x-1 px-1 sm:px-1.5 py-0.5 bg-[#10141c] rounded border border-[#242b3a]">
-              <button
-                onClick={() => {
-                  let nextZoom: number;
-                  if (timelineZoom > 0.25) {
-                    nextZoom = Math.max(0.25, Math.round((timelineZoom - 0.25) * 100) / 100);
-                  } else if (timelineZoom > 0.05) {
-                    nextZoom = Math.max(0.05, Math.round((timelineZoom - 0.05) * 100) / 100);
-                  } else {
-                    nextZoom = Math.max(0.01, Math.round((timelineZoom - 0.01) * 100) / 100);
-                  }
-                  setTimelineZoom(nextZoom);
-                }}
-                className="p-0.5 sm:p-1 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
-                title="Zoom Out (-) - Down to 1%"
-              >
-                <ZoomOut className="w-3.5 h-3.5" />
-              </button>
-
-              {/* Slider (Visible on md desktop screens) */}
-              <input
-                type="range"
-                min="0.01"
-                max="5"
-                step="0.01"
-                value={timelineZoom}
-                onChange={e => setTimelineZoom(parseFloat(e.target.value))}
-                className="hidden md:inline-block w-12 lg:w-16 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                title={`Timeline Zoom: ${Math.round(timelineZoom * 100)}%`}
-              />
-
-              <button
-                onClick={() => {
-                  let nextZoom: number;
-                  if (timelineZoom < 0.05) {
-                    nextZoom = Math.min(0.05, Math.round((timelineZoom + 0.01) * 100) / 100);
-                  } else if (timelineZoom < 0.25) {
-                    nextZoom = Math.min(0.25, Math.round((timelineZoom + 0.05) * 100) / 100);
-                  } else {
-                    nextZoom = Math.min(5, Math.round((timelineZoom + 0.25) * 100) / 100);
-                  }
-                  setTimelineZoom(nextZoom);
-                }}
-                className="p-0.5 sm:p-1 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
-                title="Zoom In (+)"
-              >
-                <ZoomIn className="w-3.5 h-3.5" />
-              </button>
-
-              {/* Zoom % badge: ALWAYS visible beside -+ on all devices */}
-              <span className="text-[10px] font-mono font-semibold text-blue-400 min-w-[32px] text-center px-1 py-0.2 bg-[#161a24] rounded border border-slate-800">
-                {Math.round(timelineZoom * 100)}%
-              </span>
-            </div>
-
-            {/* Fit to Timeline (100%) */}
-            <button
-              onClick={() => setTimelineZoom(1)}
-              className="p-1 sm:p-1.5 hover:text-white text-slate-400 rounded hover:bg-[#202634] cursor-pointer transition-colors"
-              title="Fit Timeline (100%)"
-            >
-              <Maximize2 className="w-3.5 h-3.5" />
             </button>
           </div>
 
@@ -2112,7 +2308,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                     <div
                       onPointerDown={e => {
                         if (e.target === e.currentTarget) {
-                          handleRulerPointerDown(e);
+                          handleTrackPointerDown(e);
                         }
                       }}
                       className="flex-1 h-full relative cursor-pointer z-10"
@@ -2149,9 +2345,6 @@ export const Timeline: React.FC<TimelineProps> = ({
                                 e.stopPropagation();
                                 onSelectAudio?.(clip.id);
                                 onSelectElement(null);
-                                if (currentTime < clip.startTime || currentTime >= clip.startTime + clip.duration) {
-                                  onSeek(clip.startTime);
-                                }
                               }}
                               onPointerDown={e => handleAudioClipPointerDown(e, clip.audio!, 'move')}
                               onDoubleClick={e => {
@@ -2264,9 +2457,6 @@ export const Timeline: React.FC<TimelineProps> = ({
                               e.stopPropagation();
                               onSelectElement(clip.id);
                               onSelectAudio?.(null);
-                              if (currentTime < clip.startTime || currentTime >= clip.startTime + clip.duration) {
-                                onSeek(clip.startTime);
-                              }
                             }}
                             onPointerDown={e => handleClipPointerDown(e, el, 'move')}
                             onDoubleClick={e => {
@@ -2504,6 +2694,14 @@ export const Timeline: React.FC<TimelineProps> = ({
               </button>
 
               <div className="h-px bg-slate-700/60 my-1" />
+
+              <button
+                onClick={() => handleLayerAction(activeMenuId, 'duplicate', activeMenuTrackIndex ?? undefined)}
+                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 text-blue-300 hover:text-white flex items-center space-x-2.5 cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5 text-blue-400" />
+                <span>Duplicate at Playhead</span>
+              </button>
 
               <button
                 onClick={() => handleLayerAction(activeMenuId, 'delete', activeMenuTrackIndex ?? undefined)}

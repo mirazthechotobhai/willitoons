@@ -6,6 +6,7 @@ import {
   deleteDoc,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { idbGet, idbSet, idbDelete } from '../firebase';
 import { MediaAsset } from '../types';
 
 const MEDIA_COLLECTION = 'media_assets';
@@ -40,7 +41,12 @@ export async function saveMediaAssetToCloud(asset: MediaAsset): Promise<MediaAss
     id: targetId,
   };
 
-  // 1. Immediately cache locally for zero-latency load & offline resilience
+  // 1. If payload URL is large dataUrl, store safely in IndexedDB
+  if (preparedAsset.url && preparedAsset.url.length > 50000) {
+    await idbSet(`media_${targetId}`, preparedAsset.url);
+  }
+
+  // 2. Immediately cache locally for zero-latency load & offline resilience
   const localList = getLocalMediaAssets();
   const existingIdx = localList.findIndex(a => a.id === targetId);
   if (existingIdx >= 0) {
@@ -50,10 +56,22 @@ export async function saveMediaAssetToCloud(asset: MediaAsset): Promise<MediaAss
   }
   saveLocalMediaAssets(localList);
 
-  // 2. Synchronize to Firestore media_assets collection
+  // 3. Synchronize to Firestore media_assets collection with payload size safety
+  const cloudPayload: Record<string, any> = {
+    ...preparedAsset,
+  };
+  if (cloudPayload.url && cloudPayload.url.length > 50000) {
+    // Keep URL safe to avoid 1MB document limit and write stream exhaustion
+    cloudPayload.url = cloudPayload.thumbnail && cloudPayload.thumbnail.length < 30000 ? cloudPayload.thumbnail : '';
+    cloudPayload.hasIndexedDB = true;
+  }
+  if (cloudPayload.thumbnail && cloudPayload.thumbnail.length > 50000) {
+    cloudPayload.thumbnail = '';
+  }
+
   try {
     const docRef = doc(db, MEDIA_COLLECTION, targetId);
-    await setDoc(docRef, preparedAsset, { merge: true });
+    await setDoc(docRef, cloudPayload, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `${MEDIA_COLLECTION}/${targetId}`);
   }
@@ -65,8 +83,8 @@ export async function saveMediaAssetToCloud(asset: MediaAsset): Promise<MediaAss
       await setDoc(bgRef, {
         id: targetId,
         name: preparedAsset.name,
-        url: preparedAsset.url,
-        thumbnail: preparedAsset.thumbnail || preparedAsset.url,
+        url: cloudPayload.url || preparedAsset.thumbnail || '',
+        thumbnail: cloudPayload.thumbnail || '',
         createdAt: Date.now(),
       }, { merge: true });
     } catch {
@@ -113,11 +131,11 @@ export async function loadAllMediaAssetsFromCloud(): Promise<MediaAsset[]> {
   }
 
   try {
-    // 1. Fetch from media_assets collection with 4s timeout
+    // 1. Fetch from media_assets collection with 8s timeout
     const mediaRef = collection(db, MEDIA_COLLECTION);
     const mediaPromise = getDocs(mediaRef);
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Firestore media assets timeout')), 4000)
+      setTimeout(() => reject(new Error('Firestore media assets timeout')), 8000)
     );
 
     const snapshot = await Promise.race([mediaPromise, timeoutPromise]);
@@ -154,11 +172,34 @@ export async function loadAllMediaAssetsFromCloud(): Promise<MediaAsset[]> {
     }
 
     const merged = Array.from(assetMap.values());
-    saveLocalMediaAssets(merged);
-    return merged;
+    const hydrated = await Promise.all(
+      merged.map(async (asset) => {
+        if (!asset.url) {
+          const cached = await idbGet(`media_${asset.id}`);
+          if (cached) {
+            return { ...asset, url: cached };
+          }
+        }
+        return asset;
+      })
+    );
+    saveLocalMediaAssets(hydrated);
+    return hydrated;
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, MEDIA_COLLECTION);
-    return Array.from(assetMap.values());
+    const fallback = Array.from(assetMap.values());
+    const hydratedFallback = await Promise.all(
+      fallback.map(async (asset) => {
+        if (!asset.url) {
+          const cached = await idbGet(`media_${asset.id}`);
+          if (cached) {
+            return { ...asset, url: cached };
+          }
+        }
+        return asset;
+      })
+    );
+    return hydratedFallback;
   }
 }
 
@@ -169,6 +210,9 @@ export async function deleteMediaAssetFromCloud(assetId: string): Promise<void> 
   // 1. Remove from local cache
   const updatedList = getLocalMediaAssets().filter(a => a.id !== assetId);
   saveLocalMediaAssets(updatedList);
+
+  // Remove from IndexedDB
+  await idbDelete(`media_${assetId}`);
 
   // Also remove from local backgrounds cache if present
   try {

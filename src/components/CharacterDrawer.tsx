@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { CharacterModel, CharacterAngle } from '../types';
 import { CartoonCharacter } from './CartoonCharacter';
-import { Search, Plus, Edit2, Sparkles, X } from 'lucide-react';
+import { Search, Plus, Edit2, Sparkles, X, Zap, Settings } from 'lucide-react';
 
 interface CharacterDrawerProps {
   isOpen: boolean;
@@ -128,92 +128,149 @@ export const CharacterDrawer: React.FC<CharacterDrawerProps> = ({
               onClick={() => onSelectCharacter(effectiveChar)}
               className="group relative bg-white border border-slate-200 hover:border-blue-400 rounded-xl overflow-hidden shadow-xs hover:shadow-md transition-all cursor-grab active:cursor-grabbing flex flex-col"
             >
-              {/* Top Card Bar: Name & Edit Button */}
+              {/* Top Card Bar: Name & Edit Button or Sprite Badge */}
               <div className="flex items-center justify-between p-2 pb-0 z-10">
                 <span className="text-[11px] font-semibold text-slate-700 truncate max-w-[85px]">
                   {char.name}
                 </span>
-                <button
-                  type="button"
-                  onClick={e => {
-                    e.stopPropagation();
-                    onEditCharacter(char);
-                  }}
-                  className="flex items-center space-x-0.5 px-1.5 py-0.5 text-[10px] bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-600 rounded border border-slate-200 transition-colors cursor-pointer"
-                  title="Edit Character & IK Rig"
-                >
-                  <Edit2 className="w-2.5 h-2.5" />
-                  <span>Edit</span>
-                </button>
+                {char.isSpriteSheet ? (
+                  <span
+                    className="flex items-center space-x-0.5 px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 rounded border border-amber-300"
+                    title="Sprite Sheet Animation"
+                  >
+                    <Zap className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />
+                    <span>Sprite</span>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={e => {
+                      e.stopPropagation();
+                      onEditCharacter(char);
+                    }}
+                    className="flex items-center space-x-0.5 px-1.5 py-0.5 text-[10px] bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-600 rounded border border-slate-200 transition-colors cursor-pointer"
+                    title="Edit Character & IK Rig"
+                  >
+                    <Edit2 className="w-2.5 h-2.5" />
+                    <span>Edit</span>
+                  </button>
+                )}
               </div>
 
               {/* Character Visual - Click here to add to timeline */}
               <div
-                className="w-full h-36 flex items-center justify-center p-2 relative bg-slate-50/60 cursor-pointer hover:bg-blue-50/40 transition-colors"
+                className="w-full h-36 flex items-center justify-center p-2 relative bg-slate-50/60 cursor-pointer hover:bg-blue-50/40 transition-colors overflow-hidden"
                 title="Click character to add to timeline"
               >
-                <div className="w-24 h-32 group-hover:scale-105 transition-transform">
-                  <CartoonCharacter
-                    model={effectiveChar}
-                    animation="idle"
-                    skeletonMode={false}
-                    width="100%"
-                    height="100%"
-                  />
-                </div>
+                {effectiveChar.isSpriteSheet ? (
+                  !effectiveChar.spriteSheet?.imageUrl ? (
+                    <div className="flex flex-col items-center justify-center space-y-1.5 text-amber-500">
+                      <Settings className="w-7 h-7 animate-spin text-amber-500" />
+                      <span className="text-[10px] font-semibold text-slate-500">Loading sprite...</span>
+                    </div>
+                  ) : (() => {
+                    const sp = effectiveChar.spriteSheet;
+                    const ratio = sp.aspectRatio || (sp.frameWidth && sp.frameHeight ? sp.frameWidth / sp.frameHeight : 1);
+                    const boxW = ratio >= 1 ? 120 : Math.max(30, Math.round(112 * ratio));
+                    const boxH = ratio >= 1 ? Math.max(30, Math.round(120 / ratio)) : 112;
+
+                    return (
+                      <div
+                        className="group-hover:scale-105 transition-transform flex items-center justify-center"
+                        style={{
+                          width: `${boxW}px`,
+                          height: `${boxH}px`,
+                          maxWidth: '100%',
+                          maxHeight: '100%',
+                        }}
+                      >
+                        <CartoonCharacter
+                          model={effectiveChar}
+                          animation="idle"
+                          skeletonMode={false}
+                          width="100%"
+                          height="100%"
+                        />
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <div className="w-24 h-32 group-hover:scale-105 transition-transform flex items-center justify-center">
+                    <CartoonCharacter
+                      model={effectiveChar}
+                      animation="idle"
+                      skeletonMode={false}
+                      width="100%"
+                      height="100%"
+                    />
+                  </div>
+                )}
               </div>
 
-              {/* Interactive 3-Angle Switcher: 3/4 Front, Front, 3/4 Back */}
-              <div
-                className="flex items-center justify-between p-1 bg-slate-100/90 border-t border-slate-200 text-[8.5px] font-bold gap-0.5 select-none"
-                onClick={e => e.stopPropagation()}
-              >
-                <button
-                  type="button"
-                  onClick={e => {
-                    e.stopPropagation();
-                    setCharAngles(prev => ({ ...prev, [char.id]: 'threeQuarterFront' }));
-                  }}
-                  className={`flex-1 py-1 px-0.5 rounded text-center transition-all cursor-pointer whitespace-nowrap ${
-                    currentAngle === 'threeQuarterFront'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
-                  }`}
-                  title="3/4 Front Angle"
+              {/* Interactive 3-Angle Switcher OR Sprite Sheet Info */}
+              {char.isSpriteSheet ? (
+                <div
+                  className="flex items-center justify-between px-2 py-1 bg-amber-50/90 border-t border-amber-200/60 text-[9px] font-medium text-amber-900 select-none"
+                  onClick={e => e.stopPropagation()}
                 >
-                  3/4 Front
-                </button>
-                <button
-                  type="button"
-                  onClick={e => {
-                    e.stopPropagation();
-                    setCharAngles(prev => ({ ...prev, [char.id]: 'front' }));
-                  }}
-                  className={`flex-1 py-1 px-0.5 rounded text-center transition-all cursor-pointer whitespace-nowrap ${
-                    currentAngle === 'front'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
-                  }`}
-                  title="Front Angle"
+                  <span className="flex items-center gap-1 font-mono text-amber-700">
+                    <Zap className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />
+                    <span>{char.spriteSheet?.frameCount || 0} frames</span>
+                  </span>
+                  <span className="text-[8.5px] font-semibold text-amber-700">Add to Timeline</span>
+                </div>
+              ) : (
+                <div
+                  className="flex items-center justify-between p-1 bg-slate-100/90 border-t border-slate-200 text-[8.5px] font-bold gap-0.5 select-none"
+                  onClick={e => e.stopPropagation()}
                 >
-                  Front
-                </button>
-                <button
-                  type="button"
-                  onClick={e => {
-                    e.stopPropagation();
-                    setCharAngles(prev => ({ ...prev, [char.id]: 'threeQuarterBack' }));
-                  }}
-                  className={`flex-1 py-1 px-0.5 rounded text-center transition-all cursor-pointer whitespace-nowrap ${
-                    currentAngle === 'threeQuarterBack'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
-                  }`}
-                  title="3/4 Back Angle"
-                >
-                  3/4 Back
-                </button>
-              </div>
+                  <button
+                    type="button"
+                    onClick={e => {
+                      e.stopPropagation();
+                      setCharAngles(prev => ({ ...prev, [char.id]: 'threeQuarterFront' }));
+                    }}
+                    className={`flex-1 py-1 px-0.5 rounded text-center transition-all cursor-pointer whitespace-nowrap ${
+                      currentAngle === 'threeQuarterFront'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                    }`}
+                    title="3/4 Front Angle"
+                  >
+                    3/4 Front
+                  </button>
+                  <button
+                    type="button"
+                    onClick={e => {
+                      e.stopPropagation();
+                      setCharAngles(prev => ({ ...prev, [char.id]: 'front' }));
+                    }}
+                    className={`flex-1 py-1 px-0.5 rounded text-center transition-all cursor-pointer whitespace-nowrap ${
+                      currentAngle === 'front'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                    }`}
+                    title="Front Angle"
+                  >
+                    Front
+                  </button>
+                  <button
+                    type="button"
+                    onClick={e => {
+                      e.stopPropagation();
+                      setCharAngles(prev => ({ ...prev, [char.id]: 'threeQuarterBack' }));
+                    }}
+                    className={`flex-1 py-1 px-0.5 rounded text-center transition-all cursor-pointer whitespace-nowrap ${
+                      currentAngle === 'threeQuarterBack'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                    }`}
+                    title="3/4 Back Angle"
+                  >
+                    3/4 Back
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}

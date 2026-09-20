@@ -25,6 +25,7 @@ interface NavbarProps {
   isMobileLeftRailOpen?: boolean;
   onToggleMobileRightRail?: () => void;
   isMobileRightRailOpen?: boolean;
+  onOpenSettings?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -37,6 +38,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   isMobileLeftRailOpen = false,
   onToggleMobileRightRail,
   isMobileRightRailOpen = false,
+  onOpenSettings,
 }) => {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleInput, setTitleInput] = useState(project.title);
@@ -212,6 +214,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Settings */}
         <button
+          onClick={onOpenSettings}
           title="Project Settings"
           className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition-colors cursor-pointer"
         >

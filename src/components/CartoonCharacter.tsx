@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Settings } from 'lucide-react';
 import { CharacterModel, JointId, CharacterAnimationType } from '../types';
 import { BONE_CONNECTIONS } from '../utils/characterPresets';
 import { renderMouthElement } from '../utils/mouthRenderer';
@@ -214,6 +215,80 @@ export const CartoonCharacter: React.FC<CartoonCharacterProps> = ({
       frame: animFrame,
     });
   };
+
+  // SPRITESHEET ANIMATION CHARACTER RENDERING
+  if (model.isSpriteSheet) {
+    const sp = model.spriteSheet;
+    if (!sp || !sp.imageUrl) {
+      return (
+        <div
+          className={`relative select-none flex flex-col items-center justify-center overflow-hidden p-2 text-amber-500 ${className}`}
+          style={{ width, height }}
+        >
+          <Settings className="w-8 h-8 animate-spin text-amber-500" />
+          <span className="text-[10px] font-semibold text-slate-500 mt-1">Loading sprite...</span>
+        </div>
+      );
+    }
+
+    const frameCount = Math.max(1, sp.frameCount || 1);
+    const duration = Math.max(0.1, sp.duration || 1);
+
+    // If currentTime is provided (on the canvas stage linked to timeline), synchronize precisely with timeline time:
+    let shiftPercent = 0;
+    if (currentTime !== undefined) {
+      const cycleTime = ((currentTime % duration) + duration) % duration;
+      const currentFrameIndex = Math.floor((cycleTime / duration) * frameCount);
+      shiftPercent = (currentFrameIndex / frameCount) * 100;
+    }
+
+    return (
+      <div
+        className={`relative select-none flex items-center justify-center overflow-hidden ${className}`}
+        style={{
+          width,
+          height,
+          transform: flipped ? 'scaleX(-1)' : 'none',
+          transition: 'transform 0.15s ease',
+        }}
+      >
+        <div
+          className="w-full h-full relative overflow-hidden flex items-center justify-start pointer-events-none"
+        >
+          <div
+            className="h-full flex items-center shrink-0"
+            style={
+              currentTime !== undefined
+                ? {
+                    width: `${frameCount * 100}%`,
+                    height: '100%',
+                    transform: `translateX(-${shiftPercent}%)`,
+                    willChange: 'transform',
+                  }
+                : {
+                    width: `${frameCount * 100}%`,
+                    height: '100%',
+                    animationName: 'run',
+                    animationDuration: `${duration}s`,
+                    animationTimingFunction: `steps(${frameCount})`,
+                    animationIterationCount: 'infinite',
+                    willChange: 'transform',
+                  }
+            }
+          >
+            <img
+              src={sp.imageUrl}
+              alt={model.name}
+              className="w-full h-full object-fill select-none"
+              style={{
+                imageRendering: (sp.naturalHeight || 100) <= 64 ? 'pixelated' : 'auto',
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

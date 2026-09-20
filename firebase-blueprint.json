@@ -52,6 +52,46 @@
         "updatedAt": { "type": "number", "description": "Timestamp of last update" }
       },
       "required": ["id", "name", "type", "url"]
+    },
+    "Animation": {
+      "title": "Animation",
+      "description": "Saved sprite sheet animation metadata and configuration.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID of the animation" },
+        "serialNumber": { "type": "number", "description": "Sequential display number" },
+        "fileName": { "type": "string", "description": "File or animation name" },
+        "frameCount": { "type": "number", "description": "Number of horizontal frames" },
+        "rowCount": { "type": "number", "description": "Number of rows" },
+        "activeRow": { "type": "number", "description": "Active row index" },
+        "duration": { "type": "number", "description": "Playback duration in seconds" },
+        "naturalWidth": { "type": "number", "description": "Full image width" },
+        "naturalHeight": { "type": "number", "description": "Full image height" },
+        "frameWidth": { "type": "number", "description": "Single frame width" },
+        "frameHeight": { "type": "number", "description": "Single frame height" },
+        "aspectRatio": { "type": "number", "description": "Frame aspect ratio" },
+        "fps": { "type": "number", "description": "Frames per second" },
+        "thumbnailUrl": { "type": "string", "description": "Lightweight preview thumbnail" },
+        "imageUrl": { "type": "string", "description": "Image reference or URL" },
+        "createdAt": { "type": "number", "description": "Timestamp of creation" }
+      },
+      "required": ["id", "serialNumber", "frameCount"]
+    },
+    "Preset": {
+      "title": "Preset",
+      "description": "Saved animation preset configuration and metadata.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID of the preset" },
+        "name": { "type": "string", "description": "Preset name" },
+        "category": { "type": "string", "description": "Preset category" },
+        "fps": { "type": "number", "description": "Playback speed fps" },
+        "loop": { "type": "boolean", "description": "Whether animation loops" },
+        "frameCount": { "type": "number", "description": "Total frames count" },
+        "defaultFrameIndex": { "type": "number", "description": "Default display frame" },
+        "thumbnailUrl": { "type": "string", "description": "Preview thumbnail URL" }
+      },
+      "required": ["id", "name"]
     }
   },
   "firestore": {
@@ -66,6 +106,14 @@
     "/media_assets/{assetId}": {
       "schema": "MediaAsset",
       "description": "Collection of user uploaded media assets (images, music, audio, videos) permanently saved"
+    },
+    "/animations/{animationId}": {
+      "schema": "Animation",
+      "description": "Collection of saved sprite sheet animations"
+    },
+    "/character_presets/{presetId}": {
+      "schema": "Preset",
+      "description": "Collection of animation presets"
     }
   }
 }

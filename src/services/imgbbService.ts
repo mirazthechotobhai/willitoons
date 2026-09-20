@@ -130,6 +130,75 @@ export async function uploadImageToImgBB(
 }
 
 /**
+ * Upload a base64 Data URL to ImgBB to get a permanent, worldwide CDN URL.
+ * If already a remote URL (http/https), returns it as-is.
+ * If upload fails, falls back gracefully to the base64 URL.
+ */
+export async function uploadBase64ToImgBB(
+  base64DataUrl: string,
+  customName?: string
+): Promise<ImgBBUploadResult> {
+  const apiKey = getImgBBApiKey();
+  const fileName = customName || `sprite-${Date.now()}`;
+
+  // If already an HTTP/HTTPS URL, return it directly
+  if (base64DataUrl.startsWith('http://') || base64DataUrl.startsWith('https://')) {
+    return {
+      success: true,
+      url: base64DataUrl,
+      displayUrl: base64DataUrl,
+      thumbnailUrl: base64DataUrl,
+      title: fileName,
+      isFallback: false,
+    };
+  }
+
+  try {
+    const cleanBase64 = base64DataUrl.replace(/^data:image\/[a-zA-Z0-9.+_-]+;base64,/, '');
+    const formData = new FormData();
+    formData.append('image', cleanBase64);
+    if (customName) {
+      formData.append('name', customName);
+    }
+
+    const response = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (response.ok) {
+      const json = await response.json();
+      if (json.success && json.data) {
+        const data = json.data;
+        return {
+          success: true,
+          url: data.url || data.display_url,
+          displayUrl: data.display_url || data.url,
+          thumbnailUrl: data.thumb?.url || data.display_url || data.url,
+          deleteUrl: data.delete_url,
+          id: data.id,
+          title: data.title || fileName,
+          width: data.width,
+          height: data.height,
+          isFallback: false,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('ImgBB base64 upload failed, using fallback:', err);
+  }
+
+  return {
+    success: true,
+    url: base64DataUrl,
+    displayUrl: base64DataUrl,
+    thumbnailUrl: base64DataUrl,
+    title: fileName,
+    isFallback: true,
+  };
+}
+
+/**
  * Convert file to base64 DataURL
  */
 function readFileAsDataURL(file: File | Blob): Promise<string> {

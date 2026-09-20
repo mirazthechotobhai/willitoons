@@ -204,6 +204,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [activeMenuTrackIndex, setActiveMenuTrackIndex] = useState<number | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const layerMenuRef = useRef<HTMLDivElement>(null);
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [editingNameValue, setEditingNameValue] = useState('');
   const [draggingFeedback, setDraggingFeedback] = useState<{
@@ -342,18 +343,67 @@ export const Timeline: React.FC<TimelineProps> = ({
   const minTrackWidthPx = Math.max(50, Math.round(duration * basePixelsPerSec * timelineZoom));
   const totalTimelineWidthPx = minTrackWidthPx + headerOffsetPx;
 
-  // Close menus on click outside
+  // Close menus on click / tap outside, or on window resize
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
+    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
       const target = e.target as HTMLElement;
       if (!target.closest('.timeline-menu-container')) {
         setActiveMenuId(null);
         setActiveMenuTrackIndex(null);
       }
     };
+    const handleResize = () => {
+      setActiveMenuId(null);
+      setActiveMenuTrackIndex(null);
+    };
     window.addEventListener('mousedown', handleClickOutside);
-    return () => window.removeEventListener('mousedown', handleClickOutside);
+    window.addEventListener('touchstart', handleClickOutside, { passive: true });
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('touchstart', handleClickOutside);
+      window.removeEventListener('resize', handleResize);
+    };
   }, []);
+
+  // Ensure 3-dots layer context menu NEVER overflows outside the viewport (bottom, top, right, left)
+  useEffect(() => {
+    if (!activeMenuId || !layerMenuRef.current || !menuPosition) return;
+    const el = layerMenuRef.current;
+    const rect = el.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    const margin = 8;
+
+    let adjustedTop = menuPosition.top;
+    let adjustedLeft = menuPosition.left;
+    let needsAdjustment = false;
+
+    // If bottom extends below viewport, shift up so all items (Send to back, delete, etc.) are visible
+    if (rect.bottom > vh - margin) {
+      adjustedTop = Math.max(margin, vh - rect.height - margin);
+      needsAdjustment = true;
+    }
+    // If top extends above top margin
+    if (adjustedTop < margin) {
+      adjustedTop = margin;
+      needsAdjustment = true;
+    }
+    // If right extends past right margin
+    if (rect.right > vw - margin) {
+      adjustedLeft = Math.max(margin, vw - rect.width - margin);
+      needsAdjustment = true;
+    }
+    // If left extends past left margin
+    if (adjustedLeft < margin) {
+      adjustedLeft = margin;
+      needsAdjustment = true;
+    }
+
+    if (needsAdjustment && (adjustedTop !== menuPosition.top || adjustedLeft !== menuPosition.left)) {
+      setMenuPosition({ top: Math.round(adjustedTop), left: Math.round(adjustedLeft) });
+    }
+  }, [activeMenuId, menuPosition]);
 
   // Auto-scroll timeline to follow playhead when zoomed
   useEffect(() => {
@@ -1294,10 +1344,13 @@ export const Timeline: React.FC<TimelineProps> = ({
     const targetTrack = unifiedTracks[targetTrackIdx];
     if (!targetTrack) return;
 
-    // If duplicating, duplicate the clip under playhead or selected clip or first clip on this track at playhead position on same track
+    // If duplicating, duplicate the selected clip or clip under playhead or first clip on this track at playhead position on same track
     if (action === 'duplicate') {
+      const selectedClip = (id ? targetTrack.clips.find(c => c.id === id) : null)
+        || (selectedElementId ? targetTrack.clips.find(c => c.id === selectedElementId) : null)
+        || (selectedAudioId ? targetTrack.clips.find(c => c.id === selectedAudioId) : null);
       const clipUnderPlayhead = targetTrack.clips.find(c => currentTime >= c.startTime && currentTime <= c.startTime + c.duration);
-      const targetClip = clipUnderPlayhead || (id ? targetTrack.clips.find(c => c.id === id) : null) || targetTrack.clips[0];
+      const targetClip = selectedClip || clipUnderPlayhead || targetTrack.clips[0];
       if (targetClip) {
         handleDuplicateTarget({
           id: targetClip.id,
@@ -1744,55 +1797,6 @@ export const Timeline: React.FC<TimelineProps> = ({
               </button>
             );
           })()}
-
-          {/* Duplicate Button: duplicates selected layer / cut part / audio / or layer under playhead at playhead's position on the same track */}
-          {(() => {
-            const activeEl = currentScene.elements.find(el => el.id === selectedElementId);
-            const activeAud = currentScene.audioTracks?.find(at => at.id === selectedAudioId);
-            const elUnderPlayhead = !activeEl && !activeAud
-              ? currentScene.elements.find(el => currentTime >= el.startTime && currentTime <= el.startTime + el.duration)
-              : null;
-            const audUnderPlayhead = !activeEl && !activeAud && !elUnderPlayhead
-              ? currentScene.audioTracks?.find(at => currentTime >= at.startTime && currentTime <= at.startTime + at.duration)
-              : null;
-
-            const targetToDuplicate = activeEl
-              ? { id: activeEl.id, kind: 'element' as const, name: activeEl.name, trackIndex: activeEl.trackIndex }
-              : activeAud
-              ? { id: activeAud.id, kind: 'audio' as const, name: activeAud.name, trackIndex: activeAud.trackIndex }
-              : elUnderPlayhead
-              ? { id: elUnderPlayhead.id, kind: 'element' as const, name: elUnderPlayhead.name, trackIndex: elUnderPlayhead.trackIndex }
-              : audUnderPlayhead
-              ? { id: audUnderPlayhead.id, kind: 'audio' as const, name: audUnderPlayhead.name, trackIndex: audUnderPlayhead.trackIndex }
-              : null;
-
-            const canDuplicate = Boolean(targetToDuplicate);
-
-            const handleDuplicate = () => {
-              if (targetToDuplicate) {
-                handleDuplicateTarget(targetToDuplicate);
-              }
-            };
-
-            const title = targetToDuplicate
-              ? `Duplicate "${targetToDuplicate.name}" at playhead position (${currentTime.toFixed(2)}s) on same line`
-              : 'Select a layer, cut piece, or place playhead over item to duplicate at current position';
-
-            return (
-              <button
-                onClick={handleDuplicate}
-                disabled={!canDuplicate}
-                title={title}
-                className={`flex items-center justify-center p-1.5 rounded border transition-all shrink-0 ${
-                  canDuplicate
-                    ? 'bg-blue-500/15 hover:bg-blue-500/30 text-blue-400 hover:text-blue-300 border-blue-500/40 hover:border-blue-500/60 cursor-pointer active:scale-95 shadow-sm'
-                    : 'bg-[#181d28] text-slate-600 border-slate-700/30 opacity-40 cursor-not-allowed'
-                }`}
-              >
-                <Copy className="w-3.5 h-3.5" />
-              </button>
-            );
-          })()}
         </div>
 
         {/* Right Tools: Zoom (- + 100%), Lock & Collapse */}
@@ -2150,7 +2154,19 @@ export const Timeline: React.FC<TimelineProps> = ({
                   >
                     {/* LEFT TRACK HEADER - Collapsible, with Move Up/Down, 3-Dots, Name, Lock, Eye, Delete */}
                     <div
-                      className={`transition-all duration-200 shrink-0 bg-[#181d28] h-full sticky left-0 z-30 flex items-center justify-between text-xs font-medium ${
+                      onClick={() => {
+                        const firstClip = track.clips[0];
+                        if (firstClip) {
+                          if (firstClip.kind === 'element') {
+                            onSelectElement(firstClip.id);
+                            onSelectAudio?.(null);
+                          } else {
+                            onSelectAudio?.(firstClip.id);
+                            onSelectElement(null);
+                          }
+                        }
+                      }}
+                      className={`transition-all duration-200 shrink-0 bg-[#181d28] hover:bg-[#1d2332] cursor-pointer h-full sticky left-0 z-30 flex items-center justify-between text-xs font-medium ${
                         isLayerHeadersVisible
                           ? 'w-40 sm:w-44 px-2 border-r border-[#222834] opacity-100'
                           : 'w-0 max-w-0 p-0 overflow-hidden border-r-0 opacity-0 pointer-events-none'
@@ -2161,8 +2177,37 @@ export const Timeline: React.FC<TimelineProps> = ({
                         <button
                           onClick={e => {
                             e.stopPropagation();
-                            const rect = e.currentTarget.getBoundingClientRect();
-                            setMenuPosition({ top: rect.bottom + 4, left: rect.left });
+                            const btnRect = e.currentTarget.getBoundingClientRect();
+                            const vh = window.innerHeight;
+                            const vw = window.innerWidth;
+                            const estimatedMenuHeight = 295;
+                            const estimatedMenuWidth = 190;
+                            const margin = 8;
+
+                            const spaceBelow = vh - btnRect.bottom;
+                            const spaceAbove = btnRect.top;
+
+                            let top: number;
+                            // Intelligently check if menu fits below or above so it never goes off-screen
+                            if (spaceBelow >= estimatedMenuHeight) {
+                              top = btnRect.bottom + 4;
+                            } else if (spaceAbove >= estimatedMenuHeight) {
+                              top = btnRect.top - estimatedMenuHeight - 4;
+                            } else {
+                              // If neither fits completely, place where more space exists and clamp safely
+                              if (spaceAbove > spaceBelow) {
+                                top = Math.max(margin, btnRect.top - estimatedMenuHeight - 4);
+                              } else {
+                                top = Math.max(margin, vh - estimatedMenuHeight - margin);
+                              }
+                            }
+
+                            let left = btnRect.left;
+                            if (left + estimatedMenuWidth > vw - margin) {
+                              left = Math.max(margin, vw - estimatedMenuWidth - margin);
+                            }
+
+                            setMenuPosition({ top: Math.round(top), left: Math.round(left) });
                             setActiveMenuId(track.clips[0]?.id || null);
                             setActiveMenuTrackIndex(trackIdx);
                           }}
@@ -2637,59 +2682,67 @@ export const Timeline: React.FC<TimelineProps> = ({
           {/* FLOATING 3-DOTS CONTEXT DROPDOWN MENU (Screenshot 6: Bring To Front, Send To Back, Bring Forward, Send Backward, Delete) */}
           {activeMenuId && menuPosition && (
             <div
-              className="fixed bg-[#181d28] border border-slate-700/80 rounded-lg shadow-2xl py-1.5 z-50 text-xs text-slate-200 min-w-[170px] timeline-menu-container"
+              ref={layerMenuRef}
+              className="fixed bg-[#181d28]/95 backdrop-blur-md border border-slate-700/90 rounded-xl shadow-2xl py-1.5 z-50 text-xs text-slate-200 min-w-[185px] max-w-[240px] max-h-[calc(100vh-20px)] overflow-y-auto overscroll-contain timeline-menu-container animate-fade-in"
               style={{
                 top: `${menuPosition.top}px`,
                 left: `${menuPosition.left}px`,
               }}
             >
+              <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-700/50 mb-1 flex items-center justify-between select-none">
+                <span>Layer Options</span>
+                <span className="text-[9px] text-slate-500 font-normal">
+                  Layer {(activeMenuTrackIndex ?? 0) + 1}
+                </span>
+              </div>
+
               <button
                 onClick={() => handleLayerAction(activeMenuId, 'moveToNewTrackAbove', activeMenuTrackIndex ?? undefined)}
-                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer text-blue-300"
+                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer text-blue-300 transition-colors"
               >
-                <ArrowUpToLine className="w-3.5 h-3.5 text-blue-400" />
-                <span>Move to New Layer Above</span>
+                <ArrowUpToLine className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                <span className="truncate">Move to New Layer Above</span>
               </button>
 
               <button
                 onClick={() => handleLayerAction(activeMenuId, 'moveToNewTrackBelow', activeMenuTrackIndex ?? undefined)}
-                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer text-indigo-300"
+                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer text-indigo-300 transition-colors"
               >
-                <ArrowDownToLine className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Move to New Layer Below</span>
+                <ArrowDownToLine className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                <span className="truncate">Move to New Layer Below</span>
               </button>
 
               <div className="h-px bg-slate-700/60 my-1" />
 
               <button
                 onClick={() => handleLayerAction(activeMenuId, 'bringToFront', activeMenuTrackIndex ?? undefined)}
-                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer transition-colors"
               >
-                <ChevronsUp className="w-3.5 h-3.5 text-blue-400" />
+                <ChevronsUp className="w-3.5 h-3.5 text-blue-400 shrink-0" />
                 <span>Bring To Front</span>
               </button>
 
               <button
                 onClick={() => handleLayerAction(activeMenuId, 'sendToBack', activeMenuTrackIndex ?? undefined)}
-                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer transition-colors"
               >
-                <ChevronsDown className="w-3.5 h-3.5 text-amber-400" />
+                <ChevronsDown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                 <span>Send To Back</span>
               </button>
 
               <button
                 onClick={() => handleLayerAction(activeMenuId, 'bringForward', activeMenuTrackIndex ?? undefined)}
-                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer transition-colors"
               >
-                <ArrowUp className="w-3.5 h-3.5 text-emerald-400" />
+                <ArrowUp className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                 <span>Move Layer Up</span>
               </button>
 
               <button
                 onClick={() => handleLayerAction(activeMenuId, 'sendBackward', activeMenuTrackIndex ?? undefined)}
-                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 hover:text-white flex items-center space-x-2.5 cursor-pointer transition-colors"
               >
-                <ArrowDown className="w-3.5 h-3.5 text-purple-400" />
+                <ArrowDown className="w-3.5 h-3.5 text-purple-400 shrink-0" />
                 <span>Move Layer Down</span>
               </button>
 
@@ -2697,17 +2750,17 @@ export const Timeline: React.FC<TimelineProps> = ({
 
               <button
                 onClick={() => handleLayerAction(activeMenuId, 'duplicate', activeMenuTrackIndex ?? undefined)}
-                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 text-blue-300 hover:text-white flex items-center space-x-2.5 cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-blue-600/30 text-blue-300 hover:text-white flex items-center space-x-2.5 cursor-pointer transition-colors"
               >
-                <Copy className="w-3.5 h-3.5 text-blue-400" />
-                <span>Duplicate at Playhead</span>
+                <Copy className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                <span className="truncate">Duplicate at Playhead</span>
               </button>
 
               <button
                 onClick={() => handleLayerAction(activeMenuId, 'delete', activeMenuTrackIndex ?? undefined)}
-                className="w-full text-left px-3 py-1.5 hover:bg-red-600/30 text-red-400 hover:text-red-200 flex items-center space-x-2.5 cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-red-600/30 text-red-400 hover:text-red-200 flex items-center space-x-2.5 cursor-pointer transition-colors"
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <Trash2 className="w-3.5 h-3.5 shrink-0" />
                 <span>Delete</span>
               </button>
             </div>

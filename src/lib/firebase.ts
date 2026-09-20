@@ -1,6 +1,6 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { initializeFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseAppletConfig from '../../firebase-applet-config.json';
 
 // Use the project's provisioned Firebase configuration from firebase-applet-config.json
@@ -16,11 +16,31 @@ export const firebaseConfig = {
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
 
-// Initialize Firestore with the provisioned database ID
-export const db = firebaseAppletConfig.firestoreDatabaseId
-  ? getFirestore(app, firebaseAppletConfig.firestoreDatabaseId)
-  : getFirestore(app);
+// Initialize Firestore with force long-polling to prevent WebSocket connection failures in iframe sandboxes
+export const db = initializeFirestore(
+  app,
+  {
+    experimentalForceLongPolling: true,
+  },
+  firebaseAppletConfig.firestoreDatabaseId || undefined
+);
 export const auth = getAuth(app);
+
+// Validate Connection to Firestore on startup
+async function testConnection() {
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+    console.info('Firestore backend connection confirmed.');
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.warn('Firestore is operating in offline mode. Local cache active.');
+    }
+  }
+}
+
+if (typeof window !== 'undefined') {
+  testConnection();
+}
 
 // Initialize Firebase Analytics if supported
 if (typeof window !== 'undefined' && firebaseConfig.measurementId) {

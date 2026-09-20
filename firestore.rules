@@ -28,6 +28,20 @@ service cloud.firestore {
         data.url is string;
     }
 
+    // Helper function to validate Animation schema
+    function isValidAnimation(data) {
+      return data != null &&
+        data.id is string &&
+        data.serialNumber is number;
+    }
+
+    // Helper function to validate Preset schema
+    function isValidPreset(data) {
+      return data != null &&
+        data.id is string &&
+        data.name is string;
+    }
+
     match /characters/{characterId} {
       allow read: if true;
       allow create, update: if isValidCharacter(request.resource.data);
@@ -44,6 +58,22 @@ service cloud.firestore {
       allow read: if true;
       allow create, update: if isValidMediaAsset(request.resource.data);
       allow delete: if true;
+    }
+
+    match /animations/{animationId} {
+      allow read: if true;
+      allow create, update: if isValidAnimation(request.resource.data);
+      allow delete: if true;
+    }
+
+    match /character_presets/{presetId} {
+      allow read: if true;
+      allow create, update: if isValidPreset(request.resource.data);
+      allow delete: if true;
+
+      match /frames/{frameId} {
+        allow read, write: if true;
+      }
     }
 
     match /test/{testId} {

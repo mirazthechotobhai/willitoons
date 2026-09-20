@@ -52,10 +52,13 @@ interface CanvasStageProps {
   onTogglePlay: () => void;
   onSeek: (time: number) => void;
   selectedElementId: string | null;
+  selectedAudioId?: string | null;
   onSelectElement: (id: string | null) => void;
+  onSelectAudio?: (id: string | null) => void;
   onUpdateElement: (id: string, updates: Partial<StageElement>) => void;
   onDeleteElement: (id: string) => void;
-  onDuplicateElement: (id: string) => void;
+  onDuplicateElement: (id: string, atStartTime?: number, targetTrackIndex?: number) => void;
+  onDuplicateAudioTrack?: (id: string, atStartTime?: number, targetTrackIndex?: number) => void;
   onDropAssetOnStage: (itemType: string, itemData: CharacterModel | MediaAsset, dropX: number, dropY: number) => void;
   zoomScale: number;
   onChangeZoomScale: (newZoom: number) => void;
@@ -84,10 +87,13 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   onTogglePlay,
   onSeek,
   selectedElementId,
+  selectedAudioId,
   onSelectElement,
+  onSelectAudio,
   onUpdateElement,
   onDeleteElement,
   onDuplicateElement,
+  onDuplicateAudioTrack,
   onDropAssetOnStage,
   zoomScale,
   onChangeZoomScale,
@@ -241,8 +247,14 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       return;
     }
 
-    // If no element is selected, or if element is locked:
-    if (!currentElement || currentElement.locked) {
+    const isElementActiveAtTime = Boolean(
+      currentElement &&
+      currentTime >= currentElement.startTime &&
+      currentTime <= currentElement.startTime + currentElement.duration + 0.05
+    );
+
+    // If no element is selected, or if element is locked, or if element is not active at currentTime:
+    if (!currentElement || currentElement.locked || !isElementActiveAtTime) {
       if (currentSelectedId) {
         onSelectElement(null);
       }
@@ -863,6 +875,46 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
         return;
       }
 
+      // EDGE HANDLES: Proportional for Sprite Sheet characters, or 1D stretching for normal elements
+      if (element.type === 'character' && element.characterData?.isSpriteSheet) {
+        const sp = element.characterData.spriteSheet;
+        const ratio = sp?.aspectRatio || (sp?.frameWidth && sp?.frameHeight ? sp.frameWidth / sp.frameHeight : 1);
+        const stageRatio = project.aspectRatio === '9:16' ? 9 / 16 : project.aspectRatio === '1:1' ? 1 : 16 / 9;
+        const adjustedRatio = ratio / stageRatio;
+
+        if (handle === 'e' || handle === 'w') {
+          const anchorLeft = startX - startW / 2;
+          const anchorRight = startX + startW / 2;
+          const newW = handle === 'e'
+            ? Math.max(4, Math.round(mouseX - anchorLeft))
+            : Math.max(4, Math.round(anchorRight - mouseX));
+          const newH = Math.max(4, Math.round(newW / adjustedRatio));
+          const newX = handle === 'e' ? anchorLeft + newW / 2 : anchorRight - newW / 2;
+          onUpdateElement(element.id, {
+            width: newW,
+            height: newH,
+            x: Math.round(newX),
+          });
+          return;
+        }
+
+        if (handle === 's' || handle === 'n') {
+          const anchorTop = startY - startH / 2;
+          const anchorBottom = startY + startH / 2;
+          const newH = handle === 's'
+            ? Math.max(4, Math.round(mouseY - anchorTop))
+            : Math.max(4, Math.round(anchorBottom - mouseY));
+          const newW = Math.max(4, Math.round(newH * adjustedRatio));
+          const newY = handle === 's' ? anchorTop + newH / 2 : anchorBottom - newH / 2;
+          onUpdateElement(element.id, {
+            width: newW,
+            height: newH,
+            y: Math.round(newY),
+          });
+          return;
+        }
+      }
+
       // EDGE HANDLES: Horizontal / Vertical stretching anchoring opposite edge
       if (handle === 'e') {
         const anchorLeft = startX - startW / 2;
@@ -935,6 +987,11 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   };
 
   const selectedElement = scene.elements.find(el => el.id === selectedElementId);
+  const isSelectedElementActive = Boolean(
+    selectedElement &&
+    currentTime >= selectedElement.startTime &&
+    currentTime <= selectedElement.startTime + selectedElement.duration + 0.05
+  );
 
   // Active Camera Element for current playhead time
   const activeCameraElement = scene.elements.find(el => {
@@ -1081,26 +1138,25 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
 
               const activeElements = scene.elements.filter(el => {
                 if (el.visible === false) return false;
-                const isExplicitlySelected = el.id === selectedElementId;
                 const tIdx = el.trackIndex ?? 0;
                 const sameTrack = (trackMap.get(tIdx) || []).sort((a, b) => a.startTime - b.startTime);
                 const currentIdx = sameTrack.findIndex(item => item.id === el.id);
                 const nextEl = currentIdx !== -1 && currentIdx < sameTrack.length - 1 ? sameTrack[currentIdx + 1] : null;
 
                 const elEnd = el.startTime + el.duration;
-                // If there's a head-to-head clip on the same line (touching or close within 0.25s),
-                // el stays visible right up to the start of the next clip (effectiveEnd = nextEl.startTime).
-                // This completely eliminates ANY missing frame, gap, or stutter during playback!
-                const isHeadToHead = nextEl && (nextEl.startTime >= elEnd - 0.05) && (nextEl.startTime - elEnd <= 0.25);
-                const effectiveEnd = isHeadToHead ? nextEl.startTime : elEnd;
+                // Only bridge split pieces that are genuinely adjacent/touching (gap <= 0.03s).
+                // If there is ANY intentional gap between clips, do NOT bridge them!
+                const isTouching = nextEl && (nextEl.startTime >= elEnd - 0.05) && (nextEl.startTime - elEnd <= 0.03);
+                const effectiveEnd = isTouching ? nextEl.startTime : elEnd;
 
-                // Active check: inclusive of start, clean continuous handoff at effectiveEnd
+                // An element is strictly visible ONLY when the playhead (currentTime) is within its time span!
+                // During any gap or before its start / after its end, it MUST NOT show on canvas.
                 const isPlaybackActive = currentTime >= el.startTime && (
                   currentTime < effectiveEnd ||
                   (currentTime >= scene.duration && currentTime <= elEnd + 0.05)
                 );
-                // When an element is selected by the user, it is always active and visible on canvas so it can be controlled, moved, or edited freely
-                return isPlaybackActive || isExplicitlySelected;
+
+                return isPlaybackActive;
               });
 
               return activeElements
@@ -1425,106 +1481,49 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                           title="Resize Corner"
                         />
 
-                        {/* 4 Edge Length & Width Middle Fit Handles (Top, Bottom, Left, Right - Available on all devices) */}
-                        {/* Top Middle Handle */}
-                        <div
-                          onPointerDown={e => handleResizeHandlePointerDown(e, el, 'n')}
-                          className="absolute -top-3.5 sm:-top-2.5 left-1/2 -translate-x-1/2 w-8 sm:w-6 h-3.5 sm:h-2.5 bg-white border-2 border-blue-600 rounded-full shadow-md cursor-ns-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
-                          style={{ touchAction: 'none' }}
-                          title="Fit / Stretch Height (Top)"
-                        >
-                          <div className="w-2.5 h-0.5 bg-blue-500 rounded-full pointer-events-none" />
-                        </div>
-
-                        {/* Bottom Middle Handle */}
-                        <div
-                          onPointerDown={e => handleResizeHandlePointerDown(e, el, 's')}
-                          className="absolute -bottom-3.5 sm:-bottom-2.5 left-1/2 -translate-x-1/2 w-8 sm:w-6 h-3.5 sm:h-2.5 bg-white border-2 border-blue-600 rounded-full shadow-md cursor-ns-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
-                          style={{ touchAction: 'none' }}
-                          title="Fit / Stretch Height (Bottom)"
-                        >
-                          <div className="w-2.5 h-0.5 bg-blue-500 rounded-full pointer-events-none" />
-                        </div>
-
-                        {/* Left Middle Handle */}
-                        <div
-                          onPointerDown={e => handleResizeHandlePointerDown(e, el, 'w')}
-                          className="absolute top-1/2 -translate-y-1/2 -left-3.5 sm:-left-2.5 w-3.5 sm:w-2.5 h-8 sm:h-6 bg-white border-2 border-blue-600 rounded-full shadow-md cursor-ew-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
-                          style={{ touchAction: 'none' }}
-                          title="Fit / Stretch Width (Left)"
-                        >
-                          <div className="h-2.5 w-0.5 bg-blue-500 rounded-full pointer-events-none" />
-                        </div>
-
-                        {/* Right Middle Handle */}
-                        <div
-                          onPointerDown={e => handleResizeHandlePointerDown(e, el, 'e')}
-                          className="absolute top-1/2 -translate-y-1/2 -right-3.5 sm:-right-2.5 w-3.5 sm:w-2.5 h-8 sm:h-6 bg-white border-2 border-blue-600 rounded-full shadow-md cursor-ew-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
-                          style={{ touchAction: 'none' }}
-                          title="Fit / Stretch Width (Right)"
-                        >
-                          <div className="h-2.5 w-0.5 bg-blue-500 rounded-full pointer-events-none" />
-                        </div>
-
-                        {/* On-canvas Angle Switcher for Character (3/4 Front, Front, 3/4 Back) */}
-                        {el.type === 'character' && el.characterData && (
-                          <div
-                            className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-900/95 border border-blue-500/80 rounded-full px-1.5 py-0.5 shadow-2xl flex items-center space-x-1 z-50 pointer-events-auto select-none"
-                            onClick={e => e.stopPropagation()}
-                            onPointerDown={e => e.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              onClick={e => {
-                                e.stopPropagation();
-                                onUpdateElement(el.id, {
-                                  characterData: { ...el.characterData!, angle: 'threeQuarterFront' },
-                                });
-                              }}
-                              className={`px-2 py-0.5 rounded-full text-[9px] font-bold cursor-pointer transition-all whitespace-nowrap ${
-                                (el.characterData.angle || 'threeQuarterFront') === 'threeQuarterFront'
-                                  ? 'bg-blue-600 text-white shadow-xs'
-                                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                              }`}
-                              title="3/4 Front Angle"
+                        {/* 4 Edge Length & Width Middle Fit Handles (Top, Bottom, Left, Right - for non-sprite elements) */}
+                        {!(el.type === 'character' && el.characterData?.isSpriteSheet) && (
+                          <>
+                            {/* Top Middle Handle */}
+                            <div
+                              onPointerDown={e => handleResizeHandlePointerDown(e, el, 'n')}
+                              className="absolute -top-3.5 sm:-top-2.5 left-1/2 -translate-x-1/2 w-8 sm:w-6 h-3.5 sm:h-2.5 bg-white border-2 border-blue-600 rounded-full shadow-md cursor-ns-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                              style={{ touchAction: 'none' }}
+                              title="Fit / Stretch Height (Top)"
                             >
-                              3/4 Front
-                            </button>
-                            <button
-                              type="button"
-                              onClick={e => {
-                                e.stopPropagation();
-                                onUpdateElement(el.id, {
-                                  characterData: { ...el.characterData!, angle: 'front' },
-                                });
-                              }}
-                              className={`px-2 py-0.5 rounded-full text-[9px] font-bold cursor-pointer transition-all whitespace-nowrap ${
-                                el.characterData.angle === 'front'
-                                  ? 'bg-blue-600 text-white shadow-xs'
-                                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                              }`}
-                              title="Front Angle"
+                              <div className="w-2.5 h-0.5 bg-blue-500 rounded-full pointer-events-none" />
+                            </div>
+
+                            {/* Bottom Middle Handle */}
+                            <div
+                              onPointerDown={e => handleResizeHandlePointerDown(e, el, 's')}
+                              className="absolute -bottom-3.5 sm:-bottom-2.5 left-1/2 -translate-x-1/2 w-8 sm:w-6 h-3.5 sm:h-2.5 bg-white border-2 border-blue-600 rounded-full shadow-md cursor-ns-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                              style={{ touchAction: 'none' }}
+                              title="Fit / Stretch Height (Bottom)"
                             >
-                              Front
-                            </button>
-                            <button
-                              type="button"
-                              onClick={e => {
-                                e.stopPropagation();
-                                onUpdateElement(el.id, {
-                                  characterData: { ...el.characterData!, angle: 'threeQuarterBack' },
-                                });
-                              }}
-                              className={`px-2 py-0.5 rounded-full text-[9px] font-bold cursor-pointer transition-all whitespace-nowrap ${
-                                el.characterData.angle === 'threeQuarterBack'
-                                  ? 'bg-blue-600 text-white shadow-xs'
-                                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                              }`}
-                              title="3/4 Back Angle"
+                              <div className="w-2.5 h-0.5 bg-blue-500 rounded-full pointer-events-none" />
+                            </div>
+
+                            {/* Left Middle Handle */}
+                            <div
+                              onPointerDown={e => handleResizeHandlePointerDown(e, el, 'w')}
+                              className="absolute top-1/2 -translate-y-1/2 -left-3.5 sm:-left-2.5 w-3.5 sm:w-2.5 h-8 sm:h-6 bg-white border-2 border-blue-600 rounded-full shadow-md cursor-ew-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                              style={{ touchAction: 'none' }}
+                              title="Fit / Stretch Width (Left)"
                             >
-                              3/4 Back
-                            </button>
-                          </div>
+                              <div className="h-2.5 w-0.5 bg-blue-500 rounded-full pointer-events-none" />
+                            </div>
+
+                            {/* Right Middle Handle */}
+                            <div
+                              onPointerDown={e => handleResizeHandlePointerDown(e, el, 'e')}
+                              className="absolute top-1/2 -translate-y-1/2 -right-3.5 sm:-right-2.5 w-3.5 sm:w-2.5 h-8 sm:h-6 bg-white border-2 border-blue-600 rounded-full shadow-md cursor-ew-resize hover:scale-125 active:scale-125 transition-transform z-50 touch-none flex items-center justify-center"
+                              style={{ touchAction: 'none' }}
+                              title="Fit / Stretch Width (Right)"
+                            >
+                              <div className="h-2.5 w-0.5 bg-blue-500 rounded-full pointer-events-none" />
+                            </div>
+                          </>
                         )}
                       </>
                     )}
@@ -1779,75 +1778,6 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                   Reset
                 </button>
               </div>
-
-              {/* Character Angles: 3/4 Front, Front, 3/4 Back */}
-              {selectedElement.type === 'character' && selectedElement.characterData && (
-                <>
-                  <div className="w-px h-3 bg-slate-700/80 mx-0.5 shrink-0" />
-                  <div className="flex items-center bg-slate-800 p-0.5 rounded border border-slate-700 space-x-0.5 shrink-0">
-                    <button
-                      type="button"
-                      onClick={e => {
-                        e.stopPropagation();
-                        onUpdateElement(selectedElement.id, {
-                          characterData: {
-                            ...selectedElement.characterData!,
-                            angle: 'threeQuarterFront',
-                          },
-                        });
-                      }}
-                      className={`px-1 sm:px-1.5 py-0.5 rounded text-[8px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
-                        (selectedElement.characterData.angle || 'threeQuarterFront') === 'threeQuarterFront'
-                          ? 'bg-blue-600 text-white shadow-xs'
-                          : 'text-slate-300 hover:text-white hover:bg-slate-700'
-                      }`}
-                      title="3/4 Front Angle"
-                    >
-                      3/4 Front
-                    </button>
-                    <button
-                      type="button"
-                      onClick={e => {
-                        e.stopPropagation();
-                        onUpdateElement(selectedElement.id, {
-                          characterData: {
-                            ...selectedElement.characterData!,
-                            angle: 'front',
-                          },
-                        });
-                      }}
-                      className={`px-1 sm:px-1.5 py-0.5 rounded text-[8px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
-                        selectedElement.characterData.angle === 'front'
-                          ? 'bg-blue-600 text-white shadow-xs'
-                          : 'text-slate-300 hover:text-white hover:bg-slate-700'
-                      }`}
-                      title="Front Angle"
-                    >
-                      Front
-                    </button>
-                    <button
-                      type="button"
-                      onClick={e => {
-                        e.stopPropagation();
-                        onUpdateElement(selectedElement.id, {
-                          characterData: {
-                            ...selectedElement.characterData!,
-                            angle: 'threeQuarterBack',
-                          },
-                        });
-                      }}
-                      className={`px-1 sm:px-1.5 py-0.5 rounded text-[8px] sm:text-[10px] font-semibold transition-all cursor-pointer ${
-                        selectedElement.characterData.angle === 'threeQuarterBack'
-                          ? 'bg-blue-600 text-white shadow-xs'
-                          : 'text-slate-300 hover:text-white hover:bg-slate-700'
-                      }`}
-                      title="3/4 Back Angle"
-                    >
-                      3/4 Back
-                    </button>
-                  </div>
-                </>
-              )}
             </div>
 
             {/* Desktop divider between line 1 and line 2 */}
@@ -2103,18 +2033,54 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
             <span className="font-semibold text-[11px] hidden xl:inline">Multi Select</span>
           </button>
 
-          <button
-            onClick={() => selectedElementId && onDuplicateElement(selectedElementId)}
-            disabled={!selectedElementId}
-            title="Duplicate Selected Element"
-            className="flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 disabled:opacity-35 transition-colors cursor-pointer"
-          >
-            <Copy className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-            <span className="text-[11px] hidden xl:inline">Duplicate</span>
-          </button>
+          {/* Duplicate Button: Duplicates selected layer (or layer under red line) and adds it at the red line position */}
+          {(() => {
+            const selectedEl = scene.elements.find(el => el.id === selectedElementId);
+            const selectedAud = selectedAudioId ? scene.audioTracks?.find(at => at.id === selectedAudioId) : null;
+
+            const elUnderPlayhead = !selectedEl && !selectedAud
+              ? scene.elements.find(el => currentTime >= el.startTime && currentTime <= el.startTime + el.duration)
+              : null;
+            const audUnderPlayhead = !selectedEl && !selectedAud && !elUnderPlayhead
+              ? scene.audioTracks?.find(at => currentTime >= at.startTime && currentTime <= at.startTime + at.duration)
+              : null;
+
+            const targetEl = selectedEl || elUnderPlayhead;
+            const targetAud = selectedAud || audUnderPlayhead;
+            const canDuplicate = Boolean(targetEl || targetAud);
+
+            const handleDuplicate = () => {
+              if (targetEl) {
+                onDuplicateElement(targetEl.id, currentTime, targetEl.trackIndex);
+              } else if (targetAud && onDuplicateAudioTrack) {
+                onDuplicateAudioTrack(targetAud.id, currentTime, targetAud.trackIndex);
+              }
+            };
+
+            const targetName = targetEl?.name || targetAud?.name;
+            const title = canDuplicate
+              ? `Duplicate "${targetName}" at red line (${currentTime.toFixed(2)}s)`
+              : 'Select a layer to duplicate at red line';
+
+            return (
+              <button
+                onClick={handleDuplicate}
+                disabled={!canDuplicate}
+                title={title}
+                className={`flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 rounded transition-colors cursor-pointer ${
+                  canDuplicate
+                    ? 'hover:bg-slate-100 text-slate-700 hover:text-slate-900 active:scale-95'
+                    : 'text-slate-400 opacity-40 cursor-not-allowed'
+                }`}
+              >
+                <Copy className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                <span className="text-[11px] hidden xl:inline">Duplicate</span>
+              </button>
+            );
+          })()}
 
           <button
-            onClick={() => onSplitAtPlayhead?.(selectedElementId || undefined, currentTime)}
+            onClick={() => onSplitAtPlayhead?.(isSelectedElementActive ? selectedElementId || undefined : undefined, currentTime)}
             title={`Split layer at red playhead line (${currentTime.toFixed(1)}s)`}
             className="flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 transition-colors cursor-pointer active:scale-95"
           >
@@ -2129,7 +2095,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
             className={`flex items-center space-x-1 p-0.5 sm:p-1 md:p-1.5 rounded transition-colors cursor-pointer ${
               isPropertiesOpen
                 ? 'bg-blue-600 text-white font-semibold shadow-xs'
-                : selectedElementId
+                : isSelectedElementActive
                   ? 'bg-blue-50 hover:bg-blue-100 text-blue-700 font-semibold border border-blue-200'
                   : 'hover:bg-slate-100 text-slate-600 hover:text-slate-900'
             }`}

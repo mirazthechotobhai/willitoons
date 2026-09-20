@@ -46,7 +46,7 @@ interface ElementInspectorProps {
   onSelectAudioTrack?: (id: string | null) => void;
   onUpdateElement?: (id: string, updates: Partial<StageElement>) => void;
   onDeleteElement?: (id: string) => void;
-  onDuplicateElement?: (id: string) => void;
+  onDuplicateElement?: (id: string, atStartTime?: number) => void;
   onOpenCharacterStudioForEdit?: (model: CharacterModel) => void;
   onUpdateAudioTrack?: (id: string, updates: Partial<AudioTrackItem>) => void;
   onDeleteAudioTrack?: (id: string) => void;

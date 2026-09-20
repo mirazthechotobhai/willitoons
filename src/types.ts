@@ -97,6 +97,21 @@ export interface CharacterAppearance {
   headwearColor?: string;
 }
 
+export interface CharacterSpriteSheetData {
+  imageUrl: string;
+  frameCount: number;
+  rowCount?: number;
+  activeRow?: number;
+  duration: number; // Duration of full loop in seconds
+  naturalWidth?: number;
+  naturalHeight?: number;
+  frameWidth?: number;
+  frameHeight?: number;
+  aspectRatio?: number;
+  fps?: number;
+  serialNumber?: number;
+}
+
 export interface CharacterModel {
   id: string;
   name: string;
@@ -106,6 +121,8 @@ export interface CharacterModel {
   joints: Record<JointId, { x: number; y: number }>;
   appearance: CharacterAppearance;
   isCustom?: boolean;
+  isSpriteSheet?: boolean;
+  spriteSheet?: CharacterSpriteSheetData;
 }
 
 export type StageElementType = 'character' | 'image' | 'video' | 'text' | 'speechBubble' | 'shape' | 'effect' | 'camera';
@@ -217,3 +234,97 @@ export interface BackgroundAsset {
   createdAt: number;
   updatedAt?: number;
 }
+
+export type BackgroundMode = "checker-dark" | "checker-light" | "black" | "slate";
+
+export interface SpriteSheetState {
+  imageUrl: string;
+  fileName: string;
+  frameCount: number; // columns
+  rowCount: number; // rows (lines): default 1
+  activeRow: number; // 0 = Line 1, 1 = Line 2, etc., -1 = All Lines
+  duration: number; // seconds, e.g. 1
+  isPlaying: boolean;
+  naturalWidth: number;
+  naturalHeight: number;
+  currentStep: number;
+  background: BackgroundMode;
+  scale: number; // multiplier e.g. 1, 1.5, 2
+}
+
+export interface FrameData {
+  id: number;
+  name: string;
+  dataUrl: string;
+  isDefault?: boolean;
+}
+
+export interface AnimationPreset {
+  id: string;
+  name: string;
+  category?: string;
+  fps: number;
+  loop: boolean;
+  frameCount: number;
+  defaultFrameIndex?: number;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  thumbnailUrl?: string;
+  frames: FrameData[];
+}
+
+export interface SavedAnimation {
+  id: string;
+  serialNumber: number;
+  imageUrl: string;
+  thumbnailUrl?: string;
+  fileName: string;
+  frameCount: number;
+  rowCount?: number;
+  activeRow?: number;
+  duration: number;
+  naturalWidth: number;
+  naturalHeight: number;
+  frameWidth: number;
+  frameHeight: number;
+  aspectRatio: number;
+  fps: number;
+  createdAt: number;
+}
+
+export interface AtlasFrame {
+  frame: { x: number; y: number; w: number; h: number };
+  rotated: boolean;
+  trimmed: boolean;
+  spriteSourceSize: { x: number; y: number; w: number; h: number };
+  sourceSize: { w: number; h: number };
+  duration: number;
+}
+
+export interface AnimationDef {
+  frames: string[];
+  fps: number;
+  loop: boolean;
+  _name?: string;
+  _maxBboxW?: number;
+  _maxBboxH?: number;
+}
+
+export interface GroupDef {
+  key: string;
+  spritesheetPath: string;
+  atlas: {
+    frames: Record<string, AtlasFrame>;
+    animations: Record<string, AnimationDef>;
+    meta: {
+      app: string;
+      version: string;
+      image: string;
+      format: string;
+      size: { w: number; h: number };
+      scale: string;
+      frameTags: Array<{ name: string; from: number; to: number; direction: string; color: string }>;
+    };
+  };
+}
+

@@ -179,6 +179,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             const img = await preloadImage(el.mediaUrl);
             if (img) imageAssets.set(el.mediaUrl, img);
           }
+          if (el.type === 'character' && el.characterData?.isSpriteSheet && el.characterData.spriteSheet?.imageUrl) {
+            const spUrl = el.characterData.spriteSheet.imageUrl;
+            if (!imageAssets.has(spUrl)) {
+              const img = await preloadImage(spUrl);
+              if (img) imageAssets.set(spUrl, img);
+            }
+          }
         }
       }
 
@@ -424,25 +431,44 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
           ctx.globalAlpha = el.opacity ?? 1;
 
-          // 1. CHARACTER VECTOR PUPPET
+          // 1. CHARACTER VECTOR PUPPET OR SPRITESHEET
           if (el.type === 'character' && el.characterData) {
-            const anim = el.animation || 'idle';
-            const lipSync = !!el.isLipSyncing || anim === 'talk';
-            const cacheKey = `${el.characterData.id}_${anim}_${normalizedFrame}_${lipSync ? 1 : 0}`;
-            let charImg = characterSvgCache.get(cacheKey);
+            if (el.characterData.isSpriteSheet && el.characterData.spriteSheet) {
+              const sp = el.characterData.spriteSheet;
+              const spriteImg = imageAssets.get(sp.imageUrl);
+              if (spriteImg) {
+                const count = Math.max(1, sp.frameCount || 1);
+                const dur = Math.max(0.1, sp.duration || 1);
+                const localTime = Math.max(0, sceneLocalTime - el.startTime);
+                const cycleTime = ((localTime % dur) + dur) % dur;
+                const frameIdx = Math.floor((cycleTime / dur) * count);
+                const nw = spriteImg.naturalWidth || 100;
+                const nh = spriteImg.naturalHeight || 100;
+                const fw = sp.frameWidth || (nw / count);
+                const fh = sp.frameHeight || nh;
+                const sx = Math.min(nw - 1, frameIdx * fw);
+                const sy = Math.min(nh - 1, (sp.activeRow || 0) * fh);
+                ctx.drawImage(spriteImg, sx, sy, fw, fh, -w / 2, -h / 2, w, h);
+              }
+            } else {
+              const anim = el.animation || 'idle';
+              const lipSync = !!el.isLipSyncing || anim === 'talk';
+              const cacheKey = `${el.characterData.id}_${anim}_${normalizedFrame}_${lipSync ? 1 : 0}`;
+              let charImg = characterSvgCache.get(cacheKey);
 
-            if (!charImg) {
-              // Fallback to first available cached frame for this character
-              for (const [k, v] of characterSvgCache.entries()) {
-                if (k.startsWith(el.characterData.id)) {
-                  charImg = v;
-                  break;
+              if (!charImg) {
+                // Fallback to first available cached frame for this character
+                for (const [k, v] of characterSvgCache.entries()) {
+                  if (k.startsWith(el.characterData.id)) {
+                    charImg = v;
+                    break;
+                  }
                 }
               }
-            }
 
-            if (charImg) {
-              ctx.drawImage(charImg, -w / 2, -h / 2, w, h);
+              if (charImg) {
+                ctx.drawImage(charImg, -w / 2, -h / 2, w, h);
+              }
             }
           }
 

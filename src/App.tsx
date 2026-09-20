@@ -6,17 +6,19 @@ import {
   ProjectSettings,
   MediaAsset,
   AudioTrackItem,
+  SavedAnimation,
 } from './types';
 import { INITIAL_PROJECT, INITIAL_SCENES } from './data/initialData';
-import { DEFAULT_CHARACTERS } from './utils/characterPresets';
+import { DEFAULT_CHARACTERS, DEFAULT_JOINTS } from './utils/characterPresets';
 import { STOCK_BACKGROUNDS, STOCK_AUDIO } from './utils/mediaStock';
 import { playSyntheticAudio, playUploadedAudio } from './utils/audioEngine';
-import { loadCharactersFromCloud } from './services/characterService';
+import { loadCharactersFromCloud, saveCharacterToCloud, deleteCharacterFromCloud } from './services/characterService';
 import {
   loadAllMediaAssetsFromCloud,
   deleteMediaAssetFromCloud,
 } from './services/mediaAssetService';
 import { isGifMedia, getGifDuration } from './utils/gifUtils';
+import { generateThumbnail } from './firebase';
 
 // Subcomponents
 import { Navbar } from './components/Navbar';
@@ -31,6 +33,7 @@ import { ElementInspector } from './components/ElementInspector';
 import { CharacterStudioModal } from './components/CharacterStudioModal';
 import { ExportModal } from './components/ExportModal';
 import { VoiceoverModal } from './components/VoiceoverModal';
+import { SettingsModal } from './components/SettingsModal';
 
 export default function App() {
   // Project & Scenes State
@@ -225,6 +228,119 @@ export default function App() {
     };
   }, []);
 
+  // Handle Importing an Animation from Sprite Sheet Studio into Main Character Library
+  const handleImportAnimationAsCharacter = async (anim: SavedAnimation) => {
+    const singleW = anim.frameWidth || Math.max(1, Math.round(anim.naturalWidth / anim.frameCount));
+    const singleH = anim.frameHeight || Math.max(1, anim.naturalHeight);
+    const ratio = singleW / singleH;
+
+    const baseName = anim.fileName
+      ? anim.fileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ')
+      : `Animation ${anim.serialNumber}`;
+
+    // Create a crisp lightweight thumbnail of the first frame (< 15KB)
+    let spriteThumb = anim.thumbnailUrl || '';
+    if (!spriteThumb && anim.imageUrl) {
+      spriteThumb = await generateThumbnail(anim.imageUrl, singleW, singleH, anim.activeRow || 0, 96);
+    }
+    if (!spriteThumb) {
+      spriteThumb = anim.imageUrl.length < 40000 ? anim.imageUrl : '';
+    }
+
+    const stableId = `custom-char-sprite-${anim.id}`;
+
+    const newChar: CharacterModel = {
+      id: stableId,
+      name: `Sprite ${baseName.trim()}`,
+      category: 'Latest',
+      thumbnail: spriteThumb,
+      angle: 'threeQuarterFront',
+      joints: { ...DEFAULT_JOINTS },
+      appearance: {
+        ...DEFAULT_CHARACTERS[0].appearance,
+      },
+      isCustom: true,
+      isSpriteSheet: true,
+      spriteSheet: {
+        imageUrl: anim.imageUrl,
+        frameCount: anim.frameCount,
+        rowCount: anim.rowCount || 1,
+        activeRow: anim.activeRow || 0,
+        duration: anim.duration || 1,
+        naturalWidth: anim.naturalWidth,
+        naturalHeight: anim.naturalHeight,
+        frameWidth: singleW,
+        frameHeight: singleH,
+        aspectRatio: ratio,
+        fps: anim.fps || 24,
+        serialNumber: anim.serialNumber,
+      },
+    };
+
+    // 1. Instantly prepend to characters state so it appears immediately in the character list
+    setCharacters(prev => {
+      const filtered = prev.filter(
+        c => !(
+          c.id === stableId ||
+          c.id.includes(anim.id) ||
+          (c.isSpriteSheet && (
+            c.spriteSheet?.serialNumber === anim.serialNumber ||
+            (c.spriteSheet?.imageUrl && anim.imageUrl && c.spriteSheet.imageUrl === anim.imageUrl)
+          ))
+        )
+      );
+      return [newChar, ...filtered];
+    });
+
+    // 2. Persist to cloud & local storage
+    try {
+      await saveCharacterToCloud(newChar);
+    } catch (err) {
+      console.warn('Could not save imported sprite character to cloud:', err);
+    }
+  };
+
+  // Handle Removing / Hiding an Animation from Character Library (triggered by flash icon in Saved Animations)
+  const handleRemoveAnimationFromCharacter = async (anim: SavedAnimation) => {
+    const stableId = `custom-char-sprite-${anim.id}`;
+
+    // Find all matching sprite characters in state
+    const matchedChars = characters.filter(
+      c =>
+        c.isSpriteSheet &&
+        (c.id === stableId ||
+          c.id.includes(anim.id) ||
+          c.spriteSheet?.serialNumber === anim.serialNumber ||
+          (c.spriteSheet?.imageUrl && anim.imageUrl && c.spriteSheet.imageUrl === anim.imageUrl))
+    );
+
+    // 1. Immediately remove from local state
+    setCharacters(prev =>
+      prev.filter(
+        c =>
+          !(
+            c.isSpriteSheet &&
+            (c.id === stableId ||
+              c.id.includes(anim.id) ||
+              c.spriteSheet?.serialNumber === anim.serialNumber ||
+              (c.spriteSheet?.imageUrl && anim.imageUrl && c.spriteSheet.imageUrl === anim.imageUrl))
+          )
+      )
+    );
+
+    // 2. Remove permanently from Firestore & local storage
+    for (const char of matchedChars) {
+      try {
+        await deleteCharacterFromCloud(char.id);
+      } catch (err) {
+        console.warn('Could not delete character from cloud:', err);
+      }
+    }
+    try {
+      await deleteCharacterFromCloud(stableId);
+    } catch {}
+  };
+
   // Media Library State (user uploaded + stock)
   const [userAssets, setUserAssets] = useState<MediaAsset[]>([]);
 
@@ -288,6 +404,7 @@ export default function App() {
   const [characterBeingEdited, setCharacterBeingEdited] = useState<CharacterModel | null>(null);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isVoiceoverModalOpen, setIsVoiceoverModalOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Playback State
   const [currentTime, setCurrentTime] = useState<number>(0);
@@ -300,6 +417,11 @@ export default function App() {
   const lastTickTimeRef = useRef<number | null>(null);
 
   const activeScene = scenes[activeSceneIndex] || scenes[0];
+
+  // Unified Playhead Seek Handler
+  const handleSeek = (time: number) => {
+    setCurrentTime(time);
+  };
 
   // Playback Loop
   useEffect(() => {
@@ -395,32 +517,69 @@ export default function App() {
   };
 
   const handleDuplicateElement = (id: string, atStartTime?: number, targetTrackIndex?: number) => {
-    const target = activeScene.elements.find(el => el.id === id);
+    const currentSc = scenes[activeSceneIndex];
+    if (!currentSc) return;
+    const target = currentSc.elements.find(el => el.id === id);
     if (!target) return;
 
-    const newStart = atStartTime !== undefined ? Math.max(0, atStartTime) : target.startTime;
-    const newTrack = targetTrackIndex !== undefined ? targetTrackIndex : target.trackIndex;
+    // Red line point (playhead position) in timeline
+    const playheadTime = atStartTime !== undefined ? atStartTime : currentTime;
+    const sceneDur = currentSc.duration || 120;
+    const newStart = Math.max(0, Math.min(playheadTime, Math.max(0, sceneDur - 0.5)));
+    const newDuration = Math.max(0.5, Math.min(target.duration || 8, sceneDur - newStart));
+
+    // Determine the track index: place duplicated layer on its own track row right at the target's position,
+    // and shift existing tracks at or below it down by 1 so it creates a distinct new layer line in timeline
+    const insertionTrack = targetTrackIndex !== undefined
+      ? targetTrackIndex
+      : (target.trackIndex !== undefined ? target.trackIndex : 0);
+
+    const maxZ = Math.max(...currentSc.elements.map(e => e.zIndex || 0), 0);
 
     const duplicated: StageElement = {
       ...target,
       id: `elem-${Date.now()}`,
-      name: `${target.name} Copy`,
-      x: Math.min(85, target.x + 5),
-      y: Math.min(85, target.y + 5),
-      zIndex: target.zIndex + 1,
+      name: `${target.name.replace(/ Copy( \d+)?$/, '')} Copy`,
+      x: Math.min(85, target.x + 4),
+      y: Math.min(85, target.y + 4),
+      zIndex: Math.max(target.zIndex + 1, maxZ + 1),
       startTime: newStart,
-      trackIndex: newTrack,
+      duration: newDuration,
+      trackIndex: insertionTrack,
     };
 
-    setScenes(prevScenes =>
-      prevScenes.map((sc, idx) => {
+    setScenes(prevScenes => {
+      const updated = prevScenes.map((sc, idx) => {
         if (idx !== activeSceneIndex) return sc;
+
+        // Shift existing elements whose trackIndex >= insertionTrack down by 1
+        const shiftedElements = sc.elements.map((el, elIdx) => {
+          const currentTIdx = el.trackIndex !== undefined ? el.trackIndex : elIdx;
+          return {
+            ...el,
+            trackIndex: currentTIdx >= insertionTrack ? currentTIdx + 1 : currentTIdx,
+          };
+        });
+
+        // Shift audio tracks whose trackIndex >= insertionTrack down by 1
+        const shiftedAudio = (sc.audioTracks || []).map((tr, trIdx) => {
+          const currentTIdx = tr.trackIndex !== undefined ? tr.trackIndex : (sc.elements.length + trIdx);
+          return {
+            ...tr,
+            trackIndex: currentTIdx >= insertionTrack ? currentTIdx + 1 : currentTIdx,
+          };
+        });
+
         return {
           ...sc,
-          elements: [...sc.elements, duplicated],
+          elements: [duplicated, ...shiftedElements],
+          audioTracks: shiftedAudio,
         };
-      })
-    );
+      });
+      pushHistorySnapshot(updated);
+      return updated;
+    });
+
     handleSelectElement(duplicated.id);
   };
 
@@ -531,26 +690,53 @@ export default function App() {
   };
 
   const handleDuplicateAudioTrack = (id: string, atStartTime?: number, targetTrackIndex?: number) => {
-    const target = activeScene.audioTracks?.find(tr => tr.id === id);
+    const currentSc = scenes[activeSceneIndex];
+    if (!currentSc) return;
+    const target = currentSc.audioTracks?.find(tr => tr.id === id);
     if (!target) return;
 
-    const newStart = atStartTime !== undefined ? Math.max(0, atStartTime) : target.startTime;
-    const newTrack = targetTrackIndex !== undefined ? targetTrackIndex : target.trackIndex;
+    const playheadTime = atStartTime !== undefined ? atStartTime : currentTime;
+    const sceneDur = currentSc.duration || 120;
+    const newStart = Math.max(0, Math.min(playheadTime, Math.max(0, sceneDur - 0.5)));
+    const newDuration = Math.max(0.5, Math.min(target.duration || 5, sceneDur - newStart));
+
+    const insertionTrack = targetTrackIndex !== undefined
+      ? targetTrackIndex
+      : (target.trackIndex !== undefined ? target.trackIndex : 0);
 
     const duplicated: AudioTrackItem = {
       ...target,
       id: `audio-${Date.now()}`,
-      name: `${target.name} Copy`,
+      name: `${target.name.replace(/ Copy( \d+)?$/, '')} Copy`,
       startTime: newStart,
-      trackIndex: newTrack,
+      duration: newDuration,
+      trackIndex: insertionTrack,
     };
 
     setScenes(prevScenes => {
       const updated = prevScenes.map((sc, idx) => {
         if (idx !== activeSceneIndex) return sc;
+
+        const shiftedElements = sc.elements.map((el, elIdx) => {
+          const currentTIdx = el.trackIndex !== undefined ? el.trackIndex : elIdx;
+          return {
+            ...el,
+            trackIndex: currentTIdx >= insertionTrack ? currentTIdx + 1 : currentTIdx,
+          };
+        });
+
+        const shiftedAudio = (sc.audioTracks || []).map((tr, trIdx) => {
+          const currentTIdx = tr.trackIndex !== undefined ? tr.trackIndex : (sc.elements.length + trIdx);
+          return {
+            ...tr,
+            trackIndex: currentTIdx >= insertionTrack ? currentTIdx + 1 : currentTIdx,
+          };
+        });
+
         return {
           ...sc,
-          audioTracks: [...(sc.audioTracks || []), duplicated],
+          elements: shiftedElements,
+          audioTracks: [duplicated, ...shiftedAudio],
         };
       });
       pushHistorySnapshot(updated);
@@ -600,7 +786,8 @@ export default function App() {
         (e.target as HTMLElement)?.isContentEditable ||
         isCharacterStudioOpen ||
         isExportModalOpen ||
-        isVoiceoverModalOpen
+        isVoiceoverModalOpen ||
+        isSettingsOpen
       ) {
         return;
       }
@@ -663,6 +850,7 @@ export default function App() {
     isCharacterStudioOpen,
     isExportModalOpen,
     isVoiceoverModalOpen,
+    isSettingsOpen,
   ]);
 
   const handleUpdateScene = (index: number, updates: Partial<Scene>) => {
@@ -816,6 +1004,20 @@ export default function App() {
       const start = Math.min(currentTime, Math.max(0, activeScene.duration - 1));
       const dur = Math.max(1, Math.min(defaultCharDuration, activeScene.duration - start));
 
+      let charW = 25;
+      let charH = 50;
+      if (char.isSpriteSheet && char.spriteSheet) {
+        const ratio = char.spriteSheet.aspectRatio || (char.spriteSheet.frameWidth && char.spriteSheet.frameHeight ? char.spriteSheet.frameWidth / char.spriteSheet.frameHeight : 1);
+        const stageRatio = project.aspectRatio === '9:16' ? 9 / 16 : project.aspectRatio === '1:1' ? 1 : 16 / 9;
+        if (ratio <= 1) {
+          charH = 42;
+          charW = Math.max(6, Math.min(80, Math.round((charH * (ratio / stageRatio)) * 10) / 10));
+        } else {
+          charW = 40;
+          charH = Math.max(6, Math.min(80, Math.round((charW / (ratio / stageRatio)) * 10) / 10));
+        }
+      }
+
       const newElem: StageElement = {
         id: `elem-char-${Date.now()}`,
         name: char.name,
@@ -823,8 +1025,8 @@ export default function App() {
         characterData: char,
         x: dropX,
         y: dropY,
-        width: 25,
-        height: 50,
+        width: charW,
+        height: charH,
         zIndex: (activeScene.elements.length + 1) * 10,
         startTime: start,
         duration: dur,
@@ -1017,6 +1219,7 @@ export default function App() {
         onUpdateProject={updates => setProject(prev => ({ ...prev, ...updates }))}
         onSave={() => {}}
         onExportClick={() => setIsExportModalOpen(true)}
+        onOpenSettings={() => setIsSettingsOpen(true)}
         onToggleMobileLeftRail={() => {
           setIsMobileLeftRailOpen(prev => {
             const next = !prev;
@@ -1065,12 +1268,15 @@ export default function App() {
               currentTime={currentTime}
               isPlaying={isPlaying}
               onTogglePlay={() => setIsPlaying(!isPlaying)}
-              onSeek={time => setCurrentTime(time)}
+              onSeek={handleSeek}
               selectedElementId={selectedElementId}
+              selectedAudioId={selectedAudioId}
               onSelectElement={handleSelectElement}
+              onSelectAudio={handleSelectAudio}
               onUpdateElement={handleUpdateElement}
               onDeleteElement={handleDeleteElement}
               onDuplicateElement={handleDuplicateElement}
+              onDuplicateAudioTrack={handleDuplicateAudioTrack}
               onDropAssetOnStage={handleDropAssetOnStage}
               zoomScale={zoomScale}
               onChangeZoomScale={setZoomScale}
@@ -1107,7 +1313,7 @@ export default function App() {
             onDeleteScene={handleDeleteScene}
             onUpdateScene={handleUpdateScene}
             currentTime={currentTime}
-            onSeek={time => setCurrentTime(time)}
+            onSeek={handleSeek}
             selectedElementId={selectedElementId}
             onSelectElement={handleSelectElement}
             selectedAudioId={selectedAudioId}
@@ -1338,6 +1544,22 @@ export default function App() {
                 return { ...sc, audioTracks: [...sc.audioTracks, newTrack] };
               })
             );
+          }}
+        />
+      )}
+
+      {/* 6. FULL SCREEN SETTINGS & TOOLS PAGE */}
+      {isSettingsOpen && (
+        <SettingsModal
+          isOpen={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
+          characters={characters}
+          onImportAnimationAsCharacter={handleImportAnimationAsCharacter}
+          onRemoveAnimationFromCharacterList={handleRemoveAnimationFromCharacter}
+          onOpenMainCharacterList={() => {
+            setIsSettingsOpen(false);
+            setActiveLeftTab('character');
+            setIsMobileLeftRailOpen(true);
           }}
         />
       )}

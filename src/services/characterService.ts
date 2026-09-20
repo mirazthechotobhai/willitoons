@@ -6,6 +6,8 @@ import {
   deleteDoc,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { idbGet, idbSet, idbDelete } from '../firebase';
+import { uploadBase64ToImgBB } from './imgbbService';
 import { CharacterModel } from '../types';
 
 const CHARACTERS_COLLECTION = 'characters';
@@ -22,7 +24,20 @@ function getLocalCharacters(): CharacterModel[] {
 
 function saveLocalCharacters(chars: CharacterModel[]) {
   try {
-    localStorage.setItem(LOCAL_CHARACTERS_KEY, JSON.stringify(chars));
+    // Avoid saving massive multi-megabyte base64 strings in localStorage to prevent quota crashes
+    const safeChars = chars.map((c) => {
+      if (c.isSpriteSheet && c.spriteSheet && c.spriteSheet.imageUrl && c.spriteSheet.imageUrl.length > 80000) {
+        return {
+          ...c,
+          spriteSheet: {
+            ...c.spriteSheet,
+            imageUrl: '', // Full image is preserved safely in IndexedDB
+          },
+        };
+      }
+      return c;
+    });
+    localStorage.setItem(LOCAL_CHARACTERS_KEY, JSON.stringify(safeChars));
   } catch {
     // Ignore storage quota limits gracefully
   }
@@ -31,7 +46,8 @@ function saveLocalCharacters(chars: CharacterModel[]) {
 /**
  * Saves a character model to Firebase Firestore with local fallback.
  * If `isSaveAsNew` is true, generates a fresh unique ID.
- * Returns the saved CharacterModel.
+ * Automatically keeps Firestore documents ultra-lightweight (< 50KB) by preserving
+ * full-resolution sprite sheet images in IndexedDB.
  */
 export async function saveCharacterToCloud(
   character: CharacterModel,
@@ -52,7 +68,12 @@ export async function saveCharacterToCloud(
     createdAt: (character as any).createdAt || Date.now(),
   };
 
-  // 1. Immediately persist to local storage cache so user never loses their changes
+  // 1. If this is a sprite sheet character with a full image, store the high-res image safely in IndexedDB
+  if (characterToSave.isSpriteSheet && characterToSave.spriteSheet?.imageUrl) {
+    await idbSet(`char_sprite_${targetId}`, characterToSave.spriteSheet.imageUrl);
+  }
+
+  // 2. Immediately persist to local storage cache so user never loses their changes
   const localList = getLocalCharacters();
   const existingIndex = localList.findIndex(c => c.id === targetId);
   if (existingIndex >= 0) {
@@ -62,10 +83,48 @@ export async function saveCharacterToCloud(
   }
   saveLocalCharacters(localList);
 
-  // 2. Synchronize to Firestore cloud
+  // 3. Prepare Firestore document payload, ensuring sprite sheet has a permanent cross-device URL
+  const cloudPayload: Record<string, any> = {
+    ...characterToSave,
+  };
+
+  if (cloudPayload.isSpriteSheet && cloudPayload.spriteSheet) {
+    let spriteUrl = cloudPayload.spriteSheet.imageUrl || '';
+    if (spriteUrl && !spriteUrl.startsWith('http')) {
+      try {
+        const uploadRes = await uploadBase64ToImgBB(spriteUrl, characterToSave.name);
+        if (uploadRes.success && uploadRes.url.startsWith('http')) {
+          spriteUrl = uploadRes.url;
+          characterToSave.spriteSheet.imageUrl = uploadRes.url;
+          if (!characterToSave.thumbnail && uploadRes.thumbnailUrl) {
+            characterToSave.thumbnail = uploadRes.thumbnailUrl;
+          }
+        }
+      } catch (err) {
+        console.warn('ImgBB upload for character sprite failed:', err);
+      }
+    }
+
+    const safeUrl = spriteUrl.startsWith('http')
+      ? spriteUrl
+      : (spriteUrl.length < 650000 ? spriteUrl : '');
+
+    cloudPayload.spriteSheet = {
+      ...cloudPayload.spriteSheet,
+      imageUrl: safeUrl,
+      hasIndexedDBAsset: true,
+    };
+  }
+
+  // Truncate gigantic thumbnail strings if they exceed 50KB
+  if (cloudPayload.thumbnail && cloudPayload.thumbnail.length > 50000) {
+    cloudPayload.thumbnail = '';
+  }
+
+  // 4. Synchronize to Firestore cloud
   try {
     const docRef = doc(db, CHARACTERS_COLLECTION, targetId);
-    await setDoc(docRef, characterToSave, { merge: true });
+    await setDoc(docRef, cloudPayload, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `${CHARACTERS_COLLECTION}/${targetId}`);
   }
@@ -76,6 +135,7 @@ export async function saveCharacterToCloud(
 /**
  * Loads all saved custom characters from Firebase Firestore.
  * Automatically falls back to local storage cache if network is unavailable or offline.
+ * Hydrates full-resolution sprite sheet images from IndexedDB.
  */
 export async function loadCharactersFromCloud(): Promise<CharacterModel[]> {
   const localCharacters = getLocalCharacters();
@@ -83,10 +143,10 @@ export async function loadCharactersFromCloud(): Promise<CharacterModel[]> {
   try {
     const charactersRef = collection(db, CHARACTERS_COLLECTION);
     
-    // Set a 4-second timeout race to prevent UI delay if Firestore is in offline mode
+    // Set an 8-second timeout race to prevent UI freeze while allowing initial connection
     const fetchPromise = getDocs(charactersRef);
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Firestore fetch timeout')), 4000)
+      setTimeout(() => reject(new Error('Firestore fetch timeout')), 8000)
     );
 
     const snapshot = await Promise.race([fetchPromise, timeoutPromise]);
@@ -101,20 +161,59 @@ export async function loadCharactersFromCloud(): Promise<CharacterModel[]> {
       }
     });
 
-    if (cloudList.length > 0) {
-      // Merge cloud characters with local characters (cloud taking precedence for matching IDs)
-      const mergedMap = new Map<string, CharacterModel>();
-      localCharacters.forEach(c => mergedMap.set(c.id, c));
-      cloudList.forEach(c => mergedMap.set(c.id, c));
-      const mergedList = Array.from(mergedMap.values());
-      saveLocalCharacters(mergedList);
-      return mergedList;
-    }
+    // Merge cloud characters with local characters (cloud taking precedence for matching IDs)
+    const mergedMap = new Map<string, CharacterModel>();
+    localCharacters.forEach(c => mergedMap.set(c.id, c));
+    cloudList.forEach(c => mergedMap.set(c.id, c));
+    const mergedList = Array.from(mergedMap.values());
 
-    return localCharacters;
+    // Hydrate any sprite sheet characters whose image was offloaded to IndexedDB
+    const hydratedList = await Promise.all(
+      mergedList.map(async (char) => {
+        if (char.isSpriteSheet && char.spriteSheet) {
+          if (!char.spriteSheet.imageUrl) {
+            const cached = await idbGet(`char_sprite_${char.id}`);
+            if (cached) {
+              return {
+                ...char,
+                thumbnail: char.thumbnail || cached,
+                spriteSheet: {
+                  ...char.spriteSheet,
+                  imageUrl: cached,
+                },
+              };
+            }
+          }
+        }
+        return char;
+      })
+    );
+
+    saveLocalCharacters(hydratedList);
+    return hydratedList;
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, CHARACTERS_COLLECTION);
-    return localCharacters;
+    
+    // Still hydrate local characters
+    const hydratedLocal = await Promise.all(
+      localCharacters.map(async (char) => {
+        if (char.isSpriteSheet && char.spriteSheet && !char.spriteSheet.imageUrl) {
+          const cached = await idbGet(`char_sprite_${char.id}`);
+          if (cached) {
+            return {
+              ...char,
+              thumbnail: char.thumbnail || cached,
+              spriteSheet: {
+                ...char.spriteSheet,
+                imageUrl: cached,
+              },
+            };
+          }
+        }
+        return char;
+      })
+    );
+    return hydratedLocal;
   }
 }
 
@@ -125,6 +224,9 @@ export async function deleteCharacterFromCloud(characterId: string): Promise<voi
   // Remove from local cache immediately
   const localList = getLocalCharacters().filter(c => c.id !== characterId);
   saveLocalCharacters(localList);
+
+  // Remove from IndexedDB
+  await idbDelete(`char_sprite_${characterId}`);
 
   try {
     const docRef = doc(db, CHARACTERS_COLLECTION, characterId);

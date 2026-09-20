@@ -92,10 +92,10 @@ export async function loadBackgroundsFromCloud(): Promise<BackgroundAsset[]> {
   try {
     const bgsRef = collection(db, BACKGROUNDS_COLLECTION);
     
-    // 4-second race timeout prevents stalling if connection is slow
+    // 8-second race timeout prevents stalling if connection is slow
     const fetchPromise = getDocs(bgsRef);
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Firestore fetch timeout')), 4000)
+      setTimeout(() => reject(new Error('Firestore fetch timeout')), 8000)
     );
 
     const snapshot = await Promise.race([fetchPromise, timeoutPromise]);

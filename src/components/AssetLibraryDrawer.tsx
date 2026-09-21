@@ -1,8 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { MediaAsset } from '../types';
-import { STOCK_PROPS_AND_ASSETS, STOCK_ASSET_CATEGORIES, StockAssetCategory } from '../utils/assetStock';
+import { STOCK_PROPS_AND_ASSETS, STOCK_ASSET_CATEGORIES } from '../utils/assetStock';
 import { uploadImageToImgBB } from '../services/imgbbService';
-import { saveMediaAssetToCloud, deleteMediaAssetFromCloud } from '../services/mediaAssetService';
+import { saveMediaAssetToCloud, deleteMediaAssetFromCloud, loadAllMediaAssetsFromCloud } from '../services/mediaAssetService';
 import { isGifMedia, getGifDuration } from '../utils/gifUtils';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import {
@@ -15,9 +15,9 @@ import {
   Trash2,
   FolderArchive,
   Package,
-  Sparkles,
   CheckCircle2,
   AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 
 interface AssetLibraryDrawerProps {
@@ -28,6 +28,60 @@ interface AssetLibraryDrawerProps {
   onDeleteAsset: (id: string) => void;
   onSelectAssetForStage: (asset: MediaAsset) => void;
   onDragStartAsset: (e: React.DragEvent, asset: MediaAsset) => void;
+  onRefreshAssets?: () => Promise<void>;
+}
+
+// Fast lightweight thumbnail generator for zero-latency preview across slow networks
+function createClientThumbnail(file: File | Blob): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        if (!dataUrl) {
+          resolve('');
+          return;
+        }
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const canvas = document.createElement('canvas');
+            const maxDim = 120;
+            let w = img.width;
+            let h = img.height;
+            if (w > h) {
+              if (w > maxDim) {
+                h = Math.round((h * maxDim) / w);
+                w = maxDim;
+              }
+            } else {
+              if (h > maxDim) {
+                w = Math.round((w * maxDim) / h);
+                h = maxDim;
+              }
+            }
+            canvas.width = Math.max(1, w);
+            canvas.height = Math.max(1, h);
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              resolve(canvas.toDataURL('image/jpeg', 0.6));
+              return;
+            }
+          } catch {
+            // ignore
+          }
+          resolve('');
+        };
+        img.onerror = () => resolve('');
+        img.src = dataUrl;
+      };
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(file);
+    } catch {
+      resolve('');
+    }
+  });
 }
 
 export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
@@ -38,6 +92,7 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
   onDeleteAsset,
   onSelectAssetForStage,
   onDragStartAsset,
+  onRefreshAssets,
 }) => {
   const [activeCategory, setActiveCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState('');
@@ -45,7 +100,13 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploadStatusType, setUploadStatusType] = useState<'info' | 'success' | 'error'>('info');
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [sortOrder, setSortOrder] = useState<'serial-asc' | 'serial-desc' | 'name'>('serial-asc');
   
+  // Track image loading state for graceful spinners when net is slow
+  const [loadingImages, setLoadingImages] = useState<Record<string, boolean>>({});
+  const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
+
   // Protected deletion state
   const [assetToDelete, setAssetToDelete] = useState<MediaAsset | null>(null);
 
@@ -72,9 +133,53 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
   }
 
   // Filter by search query
-  const displayedAssets = categoryFiltered.filter(a =>
+  const queryFiltered = categoryFiltered.filter(a =>
     a.name.toLowerCase().includes(searchQuery.toLowerCase().trim())
   );
+
+  // Apply deterministic serial / name sorting
+  const displayedAssets = [...queryFiltered].sort((a, b) => {
+    const isUserA = userUploadedProps.some(u => u.id === a.id);
+    const isUserB = userUploadedProps.some(u => u.id === b.id);
+
+    if (sortOrder === 'name') {
+      return a.name.localeCompare(b.name);
+    }
+
+    if (isUserA && isUserB) {
+      const serialA = a.serialNumber ?? a.createdAt ?? 0;
+      const serialB = b.serialNumber ?? b.createdAt ?? 0;
+      return sortOrder === 'serial-asc' ? serialA - serialB : serialB - serialA;
+    }
+
+    // User uploads prioritized before stock
+    if (isUserA && !isUserB) return -1;
+    if (!isUserA && isUserB) return 1;
+
+    return 0;
+  });
+
+  // Manual Cloud Sync handler
+  const handleSyncCloud = async () => {
+    setIsSyncing(true);
+    setUploadStatusType('info');
+    setUploadStatus('Syncing assets from Firebase Firestore across devices...');
+    try {
+      if (onRefreshAssets) {
+        await onRefreshAssets();
+      } else {
+        await loadAllMediaAssetsFromCloud();
+      }
+      setUploadStatusType('success');
+      setUploadStatus('Synced with Firebase Cloud!');
+    } catch (err) {
+      setUploadStatusType('error');
+      setUploadStatus('Could not sync with cloud. Check internet connection.');
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setUploadStatus(null), 2500);
+    }
+  };
 
   // Upload handler for all image formats (PNG, JPG, JPEG, WEBP, SVG, GIF, AVIF)
   const handleFilesUpload = async (files: FileList | File[]) => {
@@ -83,14 +188,30 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
     setIsUploading(true);
     let successCount = 0;
 
+    // Calculate starting serial strictly sequentially so order is 100% maintained
+    let maxSerial = 0;
+    userUploadedProps.forEach(a => {
+      if (typeof a.serialNumber === 'number' && a.serialNumber > maxSerial) {
+        maxSerial = a.serialNumber;
+      }
+    });
+    if (maxSerial === 0) {
+      maxSerial = userUploadedProps.length;
+    }
+
+    const baseTimestamp = Date.now();
+
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
+        const assignedSerial = maxSerial + i + 1;
+        const assignedCreatedAt = baseTimestamp + i * 20;
+
         setUploadStatusType('info');
         setUploadStatus(
           files.length > 1
-            ? `Uploading (${i + 1}/${files.length}): "${file.name}"...`
-            : `Uploading "${file.name}" to Cloud...`
+            ? `Uploading (${i + 1}/${files.length}): "${file.name}" [Serial #${assignedSerial}]...`
+            : `Uploading "${file.name}" [Serial #${assignedSerial}] to Firebase Cloud...`
         );
 
         try {
@@ -108,20 +229,25 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
             }
           }
 
+          // Generate instant fast thumbnail for slow networks
+          const clientThumb = await createClientThumbnail(file);
+
           // Upload to ImgBB and get permanent image URL
           const result = await uploadImageToImgBB(file, file.name);
 
           const assetItem: MediaAsset = {
-            id: `asset-prop-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+            id: `asset-prop-${baseTimestamp}-${i}-${Math.random().toString(36).substring(2, 6)}`,
             name: file.name.replace(/\.[^/.]+$/, ''),
             type: 'image',
             url: result.url,
-            thumbnail: result.thumbnailUrl || result.url,
+            thumbnail: result.thumbnailUrl || clientThumb || result.url,
             duration: gifDuration,
             width: result.width,
             height: result.height,
             category: 'My Uploads',
             isAssetLibrary: true, // Stored strictly in Asset Library, hidden from Media Library
+            serialNumber: assignedSerial, // Strictly assigned serial sequence
+            createdAt: assignedCreatedAt, // Strictly assigned monotonic timestamp
           };
 
           // Save permanently to Firebase Firestore & local IndexedDB
@@ -137,12 +263,12 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
         setUploadStatusType('success');
         setUploadStatus(
           files.length > 1
-            ? `Successfully uploaded & saved ${successCount} assets permanently!`
-            : 'Asset uploaded & saved permanently to Cloud & Database!'
+            ? `Successfully uploaded ${successCount} assets in sequential serial to Firebase!`
+            : 'Asset uploaded & saved permanently to Firebase Firestore!'
         );
       } else {
         setUploadStatusType('error');
-        setUploadStatus('Failed to upload assets. Please try again.');
+        setUploadStatus('Failed to upload assets. Please check your internet connection.');
       }
       setTimeout(() => setUploadStatus(null), 3500);
     } catch (err) {
@@ -183,7 +309,7 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
     onDeleteAsset(assetToDelete.id);
     setAssetToDelete(null);
     setUploadStatusType('info');
-    setUploadStatus('Asset permanently deleted');
+    setUploadStatus('Asset permanently deleted from Cloud');
     setTimeout(() => setUploadStatus(null), 2500);
   };
 
@@ -220,13 +346,28 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
           </div>
         </div>
 
-        <button
-          onClick={onClose}
-          className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer transition-colors"
-          title="Close Drawer"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center space-x-1">
+          {/* Cloud Sync Button */}
+          <button
+            onClick={handleSyncCloud}
+            disabled={isSyncing}
+            className={`p-1.5 text-slate-400 hover:text-blue-600 rounded-lg hover:bg-blue-50 cursor-pointer transition-colors ${
+              isSyncing ? 'text-blue-600 bg-blue-50' : ''
+            }`}
+            title="Sync latest assets from Firebase Firestore across all devices"
+          >
+            <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+          </button>
+
+          {/* Close Drawer */}
+          <button
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer transition-colors"
+            title="Close Drawer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* 2. Upload Card (Drag & Drop + Button) */}
@@ -260,7 +401,7 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
                   Upload Asset / Prop
                 </p>
                 <p className="text-[10px] text-slate-400">
-                  All Image Formats (PNG, JPG, WEBP, SVG, GIF)
+                  PNG, JPG, WEBP, SVG, GIF (Syncs to all devices)
                 </p>
               </div>
             </>
@@ -290,8 +431,8 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
         )}
       </div>
 
-      {/* 3. Search Bar */}
-      <div className="px-3 pt-2.5 pb-1">
+      {/* 3. Search Bar & Serial Sorting Bar */}
+      <div className="px-3 pt-2.5 pb-1 space-y-1.5">
         <div className="relative">
           <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
           <input
@@ -309,6 +450,50 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
               <X className="w-3.5 h-3.5" />
             </button>
           )}
+        </div>
+
+        {/* Sort Controls (Serial Order preservation) */}
+        <div className="flex items-center justify-between text-[10px] text-slate-500 pt-0.5">
+          <div className="flex items-center space-x-1">
+            <span className="text-slate-400">Sort:</span>
+            <button
+              onClick={() => setSortOrder('serial-asc')}
+              className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                sortOrder === 'serial-asc'
+                  ? 'bg-blue-100 text-blue-700 font-semibold'
+                  : 'hover:bg-slate-100 text-slate-600'
+              }`}
+              title="Sequential upload order (#1, #2, #3...)"
+            >
+              Serial 1→N
+            </button>
+            <button
+              onClick={() => setSortOrder('serial-desc')}
+              className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                sortOrder === 'serial-desc'
+                  ? 'bg-blue-100 text-blue-700 font-semibold'
+                  : 'hover:bg-slate-100 text-slate-600'
+              }`}
+              title="Newest uploaded first"
+            >
+              Newest
+            </button>
+            <button
+              onClick={() => setSortOrder('name')}
+              className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                sortOrder === 'name'
+                  ? 'bg-blue-100 text-blue-700 font-semibold'
+                  : 'hover:bg-slate-100 text-slate-600'
+              }`}
+              title="Alphabetical order"
+            >
+              A-Z
+            </button>
+          </div>
+          <span className="text-[10px] text-slate-400 flex items-center space-x-0.5">
+            <Cloud className="w-2.5 h-2.5 text-emerald-600" />
+            <span>Firestore Sync</span>
+          </span>
         </div>
       </div>
 
@@ -365,6 +550,8 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
             {displayedAssets.map(asset => {
               const isUserUploaded = userUploadedProps.some(u => u.id === asset.id);
               const isGif = isGifMedia(asset.url, asset.name);
+              const isImgLoading = loadingImages[asset.id] === true;
+              const hasError = imageErrors[asset.id] === true;
 
               return (
                 <div
@@ -389,16 +576,49 @@ export const AssetLibraryDrawer: React.FC<AssetLibraryDrawerProps> = ({
                       backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0px',
                     }}
                   >
+                    {/* Slow network loading spinner */}
+                    {isImgLoading && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-50/80 backdrop-blur-2xs z-5">
+                        <Loader2 className="w-5 h-5 text-blue-500 animate-spin mb-1" />
+                        <span className="text-[9px] text-slate-400 font-medium">Loading asset...</span>
+                      </div>
+                    )}
+
+                    {/* Network error placeholder */}
+                    {hasError && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-50 p-2 text-center z-5">
+                        <AlertCircle className="w-4 h-4 text-amber-500 mb-1" />
+                        <span className="text-[9px] text-slate-500 font-medium">Slow Network</span>
+                        <span className="text-[8px] text-slate-400">Retrying...</span>
+                      </div>
+                    )}
+
                     <img
-                      src={asset.url}
+                      src={asset.url || asset.thumbnail}
                       alt={asset.name}
-                      className="w-full h-full object-contain p-2 group-hover:scale-105 transition-transform duration-200 drop-shadow-xs"
+                      className={`w-full h-full object-contain p-2 group-hover:scale-105 transition-all duration-300 drop-shadow-xs ${
+                        isImgLoading ? 'opacity-30 blur-2xs' : 'opacity-100'
+                      }`}
                       loading="lazy"
+                      onLoad={() => {
+                        setLoadingImages(prev => ({ ...prev, [asset.id]: false }));
+                      }}
+                      onError={() => {
+                        setLoadingImages(prev => ({ ...prev, [asset.id]: false }));
+                        setImageErrors(prev => ({ ...prev, [asset.id]: true }));
+                      }}
                     />
 
                     {/* Top Badges & Delete Button */}
                     <div className="absolute top-1.5 left-1.5 right-1.5 flex items-center justify-between pointer-events-none">
                       <div className="flex items-center space-x-1">
+                        {/* Serial Number Badge for uploaded assets */}
+                        {isUserUploaded && asset.serialNumber !== undefined && (
+                          <span className="text-[9px] px-1.5 py-0.5 bg-blue-600 text-white font-bold rounded flex items-center space-x-0.5 shadow-2xs">
+                            <span>#{asset.serialNumber}</span>
+                          </span>
+                        )}
+
                         {isUserUploaded ? (
                           <span className="text-[9px] px-1.5 py-0.5 bg-emerald-600/90 backdrop-blur-xs text-white font-medium rounded flex items-center space-x-0.5 shadow-2xs">
                             <Cloud className="w-2.5 h-2.5" />

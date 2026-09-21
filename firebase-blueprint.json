@@ -48,6 +48,10 @@
         "thumbnail": { "type": "string", "description": "Thumbnail or preview" },
         "category": { "type": "string", "description": "Category name" },
         "duration": { "type": "number", "description": "Duration in seconds" },
+        "serialNumber": { "type": "number", "description": "Sequential upload serial order" },
+        "isAssetLibrary": { "type": "boolean", "description": "Whether exclusively in asset library" },
+        "isChunked": { "type": "boolean", "description": "Whether payload is split across subcollection chunks" },
+        "chunkCount": { "type": "number", "description": "Number of chunks in subcollection" },
         "createdAt": { "type": "number", "description": "Timestamp of creation" },
         "updatedAt": { "type": "number", "description": "Timestamp of last update" }
       },

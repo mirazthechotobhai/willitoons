@@ -18,6 +18,7 @@ import {
   deleteMediaAssetFromCloud,
   getLocalMediaAssets,
   loadMediaAssetsFromIndexedDB,
+  subscribeToMediaAssets,
 } from './services/mediaAssetService';
 import { isGifMedia, getGifDuration } from './utils/gifUtils';
 import { generateThumbnail } from './firebase';
@@ -387,8 +388,17 @@ export default function App() {
       }
     }
     fetchCloudMedia();
+
+    // 3. Realtime Firestore listener: any device upload instantly syncs to this device!
+    const unsubscribe = subscribeToMediaAssets(realtimeAssets => {
+      if (isMounted && realtimeAssets && realtimeAssets.length > 0) {
+        setUserAssets(realtimeAssets);
+      }
+    });
+
     return () => {
       isMounted = false;
+      unsubscribe();
     };
   }, []);
 
@@ -1532,7 +1542,18 @@ export default function App() {
                 isOpen={true}
                 onClose={() => setActiveLeftTab(null)}
                 userAssets={userAssets}
-                onAddAsset={asset => setUserAssets(prev => [asset, ...prev])}
+                onAddAsset={asset =>
+                  setUserAssets(prev => {
+                    const filtered = prev.filter(a => a.id !== asset.id);
+                    const updated = [...filtered, asset];
+                    updated.sort((a, b) => {
+                      const seqA = a.serialNumber ?? a.createdAt ?? 0;
+                      const seqB = b.serialNumber ?? b.createdAt ?? 0;
+                      return seqA - seqB;
+                    });
+                    return updated;
+                  })
+                }
                 onDeleteAsset={handleDeleteAsset}
                 onSelectAssetForStage={asset => {
                   handleDropAssetOnStage('asset', asset, 50, 50);
@@ -1540,6 +1561,10 @@ export default function App() {
                   setIsMobileLeftRailOpen(false);
                 }}
                 onDragStartAsset={handleDragStartAsset}
+                onRefreshAssets={async () => {
+                  const refreshed = await loadAllMediaAssetsFromCloud();
+                  setUserAssets(refreshed);
+                }}
               />
             )}
 

@@ -11,6 +11,10 @@ export interface MediaAsset {
   height?: number;
   category?: string;
   isAssetLibrary?: boolean; // When true, exclusively in Asset Library (props/elements), not Media Library (backgrounds/music)
+  createdAt?: number; // timestamp for accurate serial ordering
+  serialNumber?: number; // sequential upload order (#1, #2, #3...)
+  isChunked?: boolean;
+  chunkCount?: number;
 }
 
 export type JointId = 

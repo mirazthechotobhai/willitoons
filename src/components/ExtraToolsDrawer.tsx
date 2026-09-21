@@ -36,6 +36,7 @@ export const ExtraToolsDrawer: React.FC<ExtraToolsDrawerProps> = ({
     !activeTab ||
     activeTab === 'character' ||
     activeTab === 'media' ||
+    activeTab === 'assetLibrary' ||
     activeTab === 'animIK'
   ) {
     return null;

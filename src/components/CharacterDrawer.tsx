@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { CharacterModel, CharacterAngle } from '../types';
 import { CartoonCharacter } from './CartoonCharacter';
-import { Search, Plus, Edit2, Sparkles, X, Zap, Settings } from 'lucide-react';
+import { Search, Plus, Edit2, Sparkles, X, Zap, Settings, Trash2 } from 'lucide-react';
+import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 
 interface CharacterDrawerProps {
   isOpen: boolean;
@@ -11,6 +12,7 @@ interface CharacterDrawerProps {
   onCreateNewCharacter: () => void;
   onEditCharacter: (char: CharacterModel) => void;
   onDragStartCharacter: (e: React.DragEvent, char: CharacterModel) => void;
+  onDeleteCharacter?: (char: CharacterModel) => void;
 }
 
 const CATEGORIES = [
@@ -35,10 +37,12 @@ export const CharacterDrawer: React.FC<CharacterDrawerProps> = ({
   onCreateNewCharacter,
   onEditCharacter,
   onDragStartCharacter,
+  onDeleteCharacter,
 }) => {
   const [activeCategory, setActiveCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [charAngles, setCharAngles] = useState<Record<string, CharacterAngle>>({});
+  const [charToDelete, setCharToDelete] = useState<CharacterModel | null>(null);
 
   if (!isOpen) return null;
 
@@ -128,33 +132,49 @@ export const CharacterDrawer: React.FC<CharacterDrawerProps> = ({
               onClick={() => onSelectCharacter(effectiveChar)}
               className="group relative bg-white border border-slate-200 hover:border-blue-400 rounded-xl overflow-hidden shadow-xs hover:shadow-md transition-all cursor-grab active:cursor-grabbing flex flex-col"
             >
-              {/* Top Card Bar: Name & Edit Button or Sprite Badge */}
+              {/* Top Card Bar: Name & Edit Button or Sprite Badge + Delete */}
               <div className="flex items-center justify-between p-2 pb-0 z-10">
                 <span className="text-[11px] font-semibold text-slate-700 truncate max-w-[85px]">
                   {char.name}
                 </span>
-                {char.isSpriteSheet ? (
-                  <span
-                    className="flex items-center space-x-0.5 px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 rounded border border-amber-300"
-                    title="Sprite Sheet Animation"
-                  >
-                    <Zap className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />
-                    <span>Sprite</span>
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={e => {
-                      e.stopPropagation();
-                      onEditCharacter(char);
-                    }}
-                    className="flex items-center space-x-0.5 px-1.5 py-0.5 text-[10px] bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-600 rounded border border-slate-200 transition-colors cursor-pointer"
-                    title="Edit Character & IK Rig"
-                  >
-                    <Edit2 className="w-2.5 h-2.5" />
-                    <span>Edit</span>
-                  </button>
-                )}
+                <div className="flex items-center space-x-1">
+                  {char.isSpriteSheet ? (
+                    <span
+                      className="flex items-center space-x-0.5 px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 rounded border border-amber-300"
+                      title="Sprite Sheet Animation"
+                    >
+                      <Zap className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />
+                      <span>Sprite</span>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation();
+                        onEditCharacter(char);
+                      }}
+                      className="flex items-center space-x-0.5 px-1.5 py-0.5 text-[10px] bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-600 rounded border border-slate-200 transition-colors cursor-pointer"
+                      title="Edit Character & IK Rig"
+                    >
+                      <Edit2 className="w-2.5 h-2.5" />
+                      <span>Edit</span>
+                    </button>
+                  )}
+
+                  {onDeleteCharacter && (
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation();
+                        setCharToDelete(char);
+                      }}
+                      className="p-1 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 transition cursor-pointer"
+                      title="Delete Character Asset (Code 686800 required)"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Character Visual - Click here to add to timeline */}
@@ -298,6 +318,24 @@ export const CharacterDrawer: React.FC<CharacterDrawerProps> = ({
           <span>Click or Drag onto Stage</span>
         </span>
       </div>
+
+      {/* Protected Deletion Modal with secret passcode 686800 */}
+      {charToDelete && (
+        <ConfirmDeleteModal
+          isOpen={true}
+          title="Delete Character Asset"
+          itemName={charToDelete.name}
+          itemType="character asset"
+          description="This will permanently delete this character asset from Firestore cloud and local storage. It will be removed from your characters list."
+          onClose={() => setCharToDelete(null)}
+          onConfirm={() => {
+            if (onDeleteCharacter) {
+              onDeleteCharacter(charToDelete);
+            }
+            setCharToDelete(null);
+          }}
+        />
+      )}
     </div>
   );
 };

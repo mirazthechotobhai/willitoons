@@ -2,6 +2,7 @@ import React from 'react';
 import {
   User,
   Folder,
+  FolderArchive,
   LayoutTemplate,
   Sparkles,
   Video,
@@ -15,6 +16,7 @@ import {
 export type LeftNavTab =
   | 'character'
   | 'media'
+  | 'assetLibrary'
   | 'templates'
   | 'imageGen'
   | 'videoGen'
@@ -39,6 +41,7 @@ export const LeftSidebarRail: React.FC<LeftSidebarRailProps> = ({
   const navItems = [
     { id: 'character' as const, label: 'Character', icon: User, hasAI: false },
     { id: 'media' as const, label: 'Media', icon: Folder, hasAI: false },
+    { id: 'assetLibrary' as const, label: 'Asset Library', icon: FolderArchive, hasAI: false },
     { id: 'templates' as const, label: 'Templates', icon: LayoutTemplate, hasAI: false },
     { id: 'imageGen' as const, label: 'Image Gen', icon: Sparkles, hasAI: true },
     { id: 'videoGen' as const, label: 'Video Gen', icon: Video, hasAI: true },
@@ -71,6 +74,7 @@ export const LeftSidebarRail: React.FC<LeftSidebarRailProps> = ({
                   ? 'bg-blue-50 text-blue-600 shadow-xs'
                   : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
               }`}
+              title={item.label}
             >
               {/* AI Badge Pill */}
               {item.hasAI && (
@@ -81,7 +85,7 @@ export const LeftSidebarRail: React.FC<LeftSidebarRailProps> = ({
 
               <Icon className={`w-5 h-5 mb-1 ${isActive ? 'text-blue-600' : 'text-slate-500 group-hover:text-slate-900'}`} />
               
-              <span className={`text-[10px] leading-none text-center truncate max-w-[60px] ${isActive ? 'font-bold text-blue-600' : 'font-medium text-slate-600'}`}>
+              <span className={`text-[9px] leading-tight text-center px-0.5 ${isActive ? 'font-bold text-blue-600' : 'font-medium text-slate-600'}`}>
                 {item.label}
               </span>
 

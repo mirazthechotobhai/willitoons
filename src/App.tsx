@@ -16,6 +16,8 @@ import { loadCharactersFromCloud, saveCharacterToCloud, deleteCharacterFromCloud
 import {
   loadAllMediaAssetsFromCloud,
   deleteMediaAssetFromCloud,
+  getLocalMediaAssets,
+  loadMediaAssetsFromIndexedDB,
 } from './services/mediaAssetService';
 import { isGifMedia, getGifDuration } from './utils/gifUtils';
 import { generateThumbnail } from './firebase';
@@ -26,6 +28,7 @@ import { LeftSidebarRail, LeftNavTab } from './components/LeftSidebarRail';
 import { RightSidebarRail, RightNavTab } from './components/RightSidebarRail';
 import { CharacterDrawer } from './components/CharacterDrawer';
 import { MediaDrawer } from './components/MediaDrawer';
+import { AssetLibraryDrawer } from './components/AssetLibraryDrawer';
 import { ExtraToolsDrawer } from './components/ExtraToolsDrawer';
 import { CanvasStage } from './components/CanvasStage';
 import { Timeline } from './components/Timeline';
@@ -341,13 +344,39 @@ export default function App() {
     } catch {}
   };
 
-  // Media Library State (user uploaded + stock)
-  const [userAssets, setUserAssets] = useState<MediaAsset[]>([]);
+  // Permanently delete character from cloud and state
+  const handleDeleteCharacter = async (char: CharacterModel) => {
+    setCharacters(prev => prev.filter(c => c.id !== char.id));
+    try {
+      await deleteCharacterFromCloud(char.id);
+    } catch (err) {
+      console.warn('Could not delete character from cloud:', err);
+    }
+  };
 
-  // Load saved cloud media assets (backgrounds, images, audio, music) from Firebase Firestore & local storage on startup
+  // Media Library State (user uploaded + stock) - initialize from fast local storage
+  const [userAssets, setUserAssets] = useState<MediaAsset[]>(() => getLocalMediaAssets());
+
+  // Load saved cloud media assets (backgrounds, images, GIFs, props, audio, music) from IndexedDB & Firebase Firestore on startup
   useEffect(() => {
     let isMounted = true;
     async function fetchCloudMedia() {
+      // 1. Immediately hydrate from IndexedDB for zero-latency local restore of large GIFs & images
+      try {
+        const idbAssets = await loadMediaAssetsFromIndexedDB();
+        if (isMounted && idbAssets && idbAssets.length > 0) {
+          setUserAssets(prev => {
+            const map = new Map<string, MediaAsset>();
+            prev.forEach(a => map.set(a.id, a));
+            idbAssets.forEach(a => map.set(a.id, a));
+            return Array.from(map.values());
+          });
+        }
+      } catch (err) {
+        console.warn('Could not load assets from IndexedDB:', err);
+      }
+
+      // 2. Fetch latest from Firebase Firestore and merge
       try {
         const cloudAssets = await loadAllMediaAssetsFromCloud();
         if (isMounted && cloudAssets && cloudAssets.length > 0) {
@@ -1034,7 +1063,7 @@ export default function App() {
         scaleX: 1,
       };
       handleAddElement(newElem);
-    } else if (itemType === 'media') {
+    } else if (itemType === 'media' || itemType === 'asset') {
       const media = itemData as MediaAsset;
       if (media.type === 'audio') {
         // Add to audio tracks (at top of timeline)
@@ -1070,23 +1099,44 @@ export default function App() {
         const start = Math.min(currentTime, Math.max(0, activeScene.duration - 1));
         const dur = Math.max(0.5, Math.min(targetDuration, activeScene.duration - start));
 
-        // If image or video prop
-        const isProp = dropX > 15 && dropX < 85 && dropY > 15 && dropY < 85;
+        // If image or video prop or asset from Asset Library
+        const isAsset = itemType === 'asset' || media.isAssetLibrary === true;
+        const isProp = isAsset || (dropX > 15 && dropX < 85 && dropY > 15 && dropY < 85);
         if (isProp || isGif) {
+          let elemWidth = 28;
+          let elemHeight = 28;
+          if (media.width && media.height && media.width > 0 && media.height > 0) {
+            const ratio = media.width / media.height;
+            const stageRatio = project.aspectRatio === '9:16' ? 9 / 16 : project.aspectRatio === '1:1' ? 1 : 16 / 9;
+            if (ratio >= 1) {
+              elemWidth = Math.min(42, Math.max(16, Math.round(28 * Math.min(1.5, ratio))));
+              elemHeight = Math.max(12, Math.round((elemWidth / (ratio / stageRatio)) * 10) / 10);
+            } else {
+              elemHeight = Math.min(42, Math.max(16, Math.round(28 * Math.min(1.5, 1 / ratio))));
+              elemWidth = Math.max(12, Math.round((elemHeight * (ratio / stageRatio)) * 10) / 10);
+            }
+          }
+
           const newElem: StageElement = {
-            id: `elem-media-${Date.now()}`,
+            id: `elem-${isAsset ? 'asset' : 'media'}-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
             name: media.name,
             type: 'image',
             mediaUrl: media.url,
             x: dropX,
             y: dropY,
-            width: 28,
-            height: 28,
+            width: elemWidth,
+            height: elemHeight,
+            rotation: 0,
+            scaleX: 1,
+            opacity: 1,
             zIndex: (activeScene.elements.length + 1) * 10,
             startTime: start,
             duration: dur,
+            visible: true,
+            locked: false,
           };
           handleAddElement(newElem);
+          setSelectedElementId(newElem.id);
         } else {
           // Add as background element on top layer
           const bgId = `elem-bg-${Date.now()}`;
@@ -1180,6 +1230,14 @@ export default function App() {
     e.dataTransfer.setData(
       'application/json',
       JSON.stringify({ type: 'media', data: media })
+    );
+  };
+
+  // Drag Start helper for asset library cards
+  const handleDragStartAsset = (e: React.DragEvent, asset: MediaAsset) => {
+    e.dataTransfer.setData(
+      'application/json',
+      JSON.stringify({ type: 'asset', data: asset })
     );
   };
 
@@ -1347,7 +1405,17 @@ export default function App() {
         <div className="hidden md:flex shrink-0">
           <RightSidebarRail
             activeTab={activeRightTab}
-            onSelectTab={tab => setActiveRightTab(tab)}
+            onSelectTab={tab => {
+              if (tab === 'assets') {
+                setActiveLeftTab(activeLeftTab === 'assetLibrary' ? null : 'assetLibrary');
+                setActiveRightTab(null);
+              } else if (tab === 'music' || tab === 'sounds') {
+                setActiveLeftTab(activeLeftTab === 'media' ? null : 'media');
+                setActiveRightTab(null);
+              } else {
+                setActiveRightTab(tab);
+              }
+            }}
             hasSelectedElement={!!(selectedElement || selectedAudio)}
           />
         </div>
@@ -1384,7 +1452,19 @@ export default function App() {
           <div className="md:hidden absolute right-0 top-0 bottom-0 z-50 flex shadow-2xl animate-in slide-in-from-right duration-200">
             <RightSidebarRail
               activeTab={activeRightTab}
-              onSelectTab={tab => setActiveRightTab(tab)}
+              onSelectTab={tab => {
+                if (tab === 'assets') {
+                  setActiveLeftTab(activeLeftTab === 'assetLibrary' ? null : 'assetLibrary');
+                  setActiveRightTab(null);
+                  setIsMobileRightRailOpen(false);
+                } else if (tab === 'music' || tab === 'sounds') {
+                  setActiveLeftTab(activeLeftTab === 'media' ? null : 'media');
+                  setActiveRightTab(null);
+                  setIsMobileRightRailOpen(false);
+                } else {
+                  setActiveRightTab(tab);
+                }
+              }}
               hasSelectedElement={!!(selectedElement || selectedAudio)}
             />
           </div>
@@ -1415,6 +1495,7 @@ export default function App() {
                   setIsCharacterStudioOpen(true);
                 }}
                 onDragStartCharacter={handleDragStartCharacter}
+                onDeleteCharacter={handleDeleteCharacter}
               />
             )}
 
@@ -1445,8 +1526,25 @@ export default function App() {
               />
             )}
 
+            {/* Asset Library Drawer */}
+            {activeLeftTab === 'assetLibrary' && (
+              <AssetLibraryDrawer
+                isOpen={true}
+                onClose={() => setActiveLeftTab(null)}
+                userAssets={userAssets}
+                onAddAsset={asset => setUserAssets(prev => [asset, ...prev])}
+                onDeleteAsset={handleDeleteAsset}
+                onSelectAssetForStage={asset => {
+                  handleDropAssetOnStage('asset', asset, 50, 50);
+                  setActiveLeftTab(null);
+                  setIsMobileLeftRailOpen(false);
+                }}
+                onDragStartAsset={handleDragStartAsset}
+              />
+            )}
+
             {/* Extra Tools (Text, Templates, AI Generation) */}
-            {activeLeftTab !== 'character' && activeLeftTab !== 'media' && (
+            {activeLeftTab !== 'character' && activeLeftTab !== 'media' && activeLeftTab !== 'assetLibrary' && (
               <ExtraToolsDrawer
                 activeTab={activeLeftTab}
                 onClose={() => setActiveLeftTab(null)}

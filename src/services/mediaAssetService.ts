@@ -12,6 +12,7 @@ import { MediaAsset } from '../types';
 const MEDIA_COLLECTION = 'media_assets';
 const BACKGROUNDS_COLLECTION = 'backgrounds';
 const LOCAL_ASSETS_KEY = 'willitoons_persisted_assets';
+const IDB_ALL_MEDIA_KEY = 'willitoons_all_media_assets_v2';
 
 export function getLocalMediaAssets(): MediaAsset[] {
   try {
@@ -24,15 +25,51 @@ export function getLocalMediaAssets(): MediaAsset[] {
 
 export function saveLocalMediaAssets(assets: MediaAsset[]): void {
   try {
-    localStorage.setItem(LOCAL_ASSETS_KEY, JSON.stringify(assets));
+    // Sanitize to prevent LocalStorage 5MB QuotaExceededError crashes
+    // Strip large Base64 data URLs (> 3000 chars) from localStorage since they are safely kept in IndexedDB
+    const sanitized = assets.map(a => ({
+      ...a,
+      url: a.url && a.url.length > 3000 ? '' : a.url,
+      thumbnail: a.thumbnail && a.thumbnail.length > 3000 ? '' : a.thumbnail,
+    }));
+    localStorage.setItem(LOCAL_ASSETS_KEY, JSON.stringify(sanitized));
   } catch (err) {
     console.warn('LocalStorage quota limit reached for media assets:', err);
   }
 }
 
 /**
- * Saves any media asset (Background Image, Music, Audio, Video) to Firebase Firestore
- * and local cache so it persists forever across all sessions and website visits.
+ * Saves all media assets to IndexedDB (virtually unlimited quota for large GIF/image files).
+ */
+export async function saveMediaAssetsToIndexedDB(assets: MediaAsset[]): Promise<void> {
+  try {
+    await idbSet(IDB_ALL_MEDIA_KEY, JSON.stringify(assets));
+  } catch (err) {
+    console.warn('Failed saving media assets list to IndexedDB:', err);
+  }
+}
+
+/**
+ * Loads all media assets from IndexedDB with full high-resolution Base64 & GIF URLs.
+ */
+export async function loadMediaAssetsFromIndexedDB(): Promise<MediaAsset[]> {
+  try {
+    const raw = await idbGet(IDB_ALL_MEDIA_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed loading media assets list from IndexedDB:', err);
+  }
+  return [];
+}
+
+/**
+ * Saves any media asset (Background Image, GIF, Prop, Music, Audio) to IndexedDB, LocalStorage,
+ * and Firebase Firestore so it persists permanently across all page reloads and device sessions.
  */
 export async function saveMediaAssetToCloud(asset: MediaAsset): Promise<MediaAsset> {
   const targetId = asset.id || `media-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
@@ -41,27 +78,33 @@ export async function saveMediaAssetToCloud(asset: MediaAsset): Promise<MediaAss
     id: targetId,
   };
 
-  // 1. If payload URL is large dataUrl, store safely in IndexedDB
-  if (preparedAsset.url && preparedAsset.url.length > 50000) {
+  // 1. If payload URL is large dataUrl or GIF, store safely in IndexedDB
+  if (preparedAsset.url) {
     await idbSet(`media_${targetId}`, preparedAsset.url);
   }
-
-  // 2. Immediately cache locally for zero-latency load & offline resilience
-  const localList = getLocalMediaAssets();
-  const existingIdx = localList.findIndex(a => a.id === targetId);
-  if (existingIdx >= 0) {
-    localList[existingIdx] = preparedAsset;
-  } else {
-    localList.unshift(preparedAsset);
+  if (preparedAsset.thumbnail) {
+    await idbSet(`media_thumb_${targetId}`, preparedAsset.thumbnail);
   }
-  saveLocalMediaAssets(localList);
 
-  // 3. Synchronize to Firestore media_assets collection with payload size safety
+  // 2. Cache in IndexedDB (full fidelity) and localStorage (sanitized)
+  const currentList = await loadMediaAssetsFromIndexedDB();
+  const existingIdx = currentList.findIndex(a => a.id === targetId);
+  let updatedList: MediaAsset[];
+  if (existingIdx >= 0) {
+    updatedList = [...currentList];
+    updatedList[existingIdx] = preparedAsset;
+  } else {
+    updatedList = [preparedAsset, ...currentList];
+  }
+  await saveMediaAssetsToIndexedDB(updatedList);
+  saveLocalMediaAssets(updatedList);
+
+  // 3. Synchronize to Firestore media_assets collection with document size safety
   const cloudPayload: Record<string, any> = {
     ...preparedAsset,
   };
   if (cloudPayload.url && cloudPayload.url.length > 50000) {
-    // Keep URL safe to avoid 1MB document limit and write stream exhaustion
+    // Keep URL safe from 1MB Firestore doc limit
     cloudPayload.url = cloudPayload.thumbnail && cloudPayload.thumbnail.length < 30000 ? cloudPayload.thumbnail : '';
     cloudPayload.hasIndexedDB = true;
   }
@@ -76,8 +119,8 @@ export async function saveMediaAssetToCloud(asset: MediaAsset): Promise<MediaAss
     handleFirestoreError(error, OperationType.WRITE, `${MEDIA_COLLECTION}/${targetId}`);
   }
 
-  // If it's an image background, also mirror to backgrounds collection for compatibility
-  if (preparedAsset.type === 'image') {
+  // If it's an image background (and not a prop/asset library item), mirror to backgrounds collection for compatibility
+  if (preparedAsset.type === 'image' && !preparedAsset.isAssetLibrary) {
     try {
       const bgRef = doc(db, BACKGROUNDS_COLLECTION, targetId);
       await setDoc(bgRef, {
@@ -96,17 +139,33 @@ export async function saveMediaAssetToCloud(asset: MediaAsset): Promise<MediaAss
 }
 
 /**
- * Loads all saved media assets (Backgrounds, Music, Audio, Images) from Firebase Firestore.
- * Merges with local cache to guarantee everything is available immediately when visiting the website.
+ * Loads all saved media assets (GIFs, Props, Backgrounds, Audio, Images) from IndexedDB, LocalStorage,
+ * and Firebase Firestore. Merges everything to guarantee zero loss on page reload.
  */
 export async function loadAllMediaAssetsFromCloud(): Promise<MediaAsset[]> {
-  const localList = getLocalMediaAssets();
   const assetMap = new Map<string, MediaAsset>();
 
-  // Add local assets first
-  localList.forEach(a => assetMap.set(a.id, a));
+  // 1. Gather all assets from IndexedDB first (contains large Base64 URLs & GIFs)
+  try {
+    const idbList = await loadMediaAssetsFromIndexedDB();
+    idbList.forEach(a => {
+      if (a && a.id) {
+        assetMap.set(a.id, a);
+      }
+    });
+  } catch {
+    // ignore
+  }
 
-  // Also import legacy uploaded backgrounds if present
+  // 2. Gather from local storage as supplementary source
+  const localList = getLocalMediaAssets();
+  localList.forEach(a => {
+    if (a && a.id && !assetMap.has(a.id)) {
+      assetMap.set(a.id, a);
+    }
+  });
+
+  // 3. Also import legacy uploaded backgrounds if present
   try {
     const rawBgs = localStorage.getItem('willitoons_uploaded_backgrounds');
     if (rawBgs) {
@@ -131,7 +190,7 @@ export async function loadAllMediaAssetsFromCloud(): Promise<MediaAsset[]> {
   }
 
   try {
-    // 1. Fetch from media_assets collection with 8s timeout
+    // 4. Fetch from media_assets collection with 8s timeout
     const mediaRef = collection(db, MEDIA_COLLECTION);
     const mediaPromise = getDocs(mediaRef);
     const timeoutPromise = new Promise<never>((_, reject) =>
@@ -141,14 +200,24 @@ export async function loadAllMediaAssetsFromCloud(): Promise<MediaAsset[]> {
     const snapshot = await Promise.race([mediaPromise, timeoutPromise]);
     snapshot.forEach(docSnap => {
       if (docSnap.exists()) {
-        const data = docSnap.data() as MediaAsset;
-        if (data.id && data.url && data.name) {
-          assetMap.set(data.id, data);
+        const data = docSnap.data() as MediaAsset & { hasIndexedDB?: boolean };
+        if (data.id && data.name) {
+          const existing = assetMap.get(data.id);
+          if (!existing) {
+            assetMap.set(data.id, data);
+          } else {
+            // Merge cloud metadata while preserving high-resolution local URL/GIF from IndexedDB
+            assetMap.set(data.id, {
+              ...data,
+              url: existing.url || data.url,
+              thumbnail: existing.thumbnail || data.thumbnail,
+            });
+          }
         }
       }
     });
 
-    // 2. Fetch from backgrounds collection as well
+    // 5. Fetch from backgrounds collection as well
     try {
       const bgRef = collection(db, BACKGROUNDS_COLLECTION);
       const bgSnapshot = await getDocs(bgRef);
@@ -171,18 +240,28 @@ export async function loadAllMediaAssetsFromCloud(): Promise<MediaAsset[]> {
       // ignore
     }
 
+    // 6. Hydrate any missing URLs from IndexedDB
     const merged = Array.from(assetMap.values());
     const hydrated = await Promise.all(
       merged.map(async (asset) => {
-        if (!asset.url) {
+        let url = asset.url;
+        if (!url || url.length < 20 || (asset as any).hasIndexedDB) {
           const cached = await idbGet(`media_${asset.id}`);
           if (cached) {
-            return { ...asset, url: cached };
+            url = cached;
           }
         }
-        return asset;
+        let thumb = asset.thumbnail || url;
+        if (!thumb || thumb.length < 20) {
+          const cachedThumb = await idbGet(`media_thumb_${asset.id}`);
+          if (cachedThumb) thumb = cachedThumb;
+        }
+        return { ...asset, url: url || thumb, thumbnail: thumb || url };
       })
     );
+
+    // Save full list back to IndexedDB and sanitized list to localStorage
+    await saveMediaAssetsToIndexedDB(hydrated);
     saveLocalMediaAssets(hydrated);
     return hydrated;
   } catch (error) {
@@ -190,29 +269,42 @@ export async function loadAllMediaAssetsFromCloud(): Promise<MediaAsset[]> {
     const fallback = Array.from(assetMap.values());
     const hydratedFallback = await Promise.all(
       fallback.map(async (asset) => {
-        if (!asset.url) {
+        let url = asset.url;
+        if (!url || url.length < 20 || (asset as any).hasIndexedDB) {
           const cached = await idbGet(`media_${asset.id}`);
           if (cached) {
-            return { ...asset, url: cached };
+            url = cached;
           }
         }
-        return asset;
+        let thumb = asset.thumbnail || url;
+        if (!thumb || thumb.length < 20) {
+          const cachedThumb = await idbGet(`media_thumb_${asset.id}`);
+          if (cachedThumb) thumb = cachedThumb;
+        }
+        return { ...asset, url: url || thumb, thumbnail: thumb || url };
       })
     );
+    await saveMediaAssetsToIndexedDB(hydratedFallback);
+    saveLocalMediaAssets(hydratedFallback);
     return hydratedFallback;
   }
 }
 
 /**
- * Permanently deletes any media asset from Firestore and local cache.
+ * Permanently deletes any media asset from Firestore, IndexedDB, and local cache.
  */
 export async function deleteMediaAssetFromCloud(assetId: string): Promise<void> {
-  // 1. Remove from local cache
+  // 1. Remove from local cache & IndexedDB
   const updatedList = getLocalMediaAssets().filter(a => a.id !== assetId);
   saveLocalMediaAssets(updatedList);
 
-  // Remove from IndexedDB
+  const idbList = await loadMediaAssetsFromIndexedDB();
+  const updatedIdbList = idbList.filter(a => a.id !== assetId);
+  await saveMediaAssetsToIndexedDB(updatedIdbList);
+
+  // Remove individual keys from IndexedDB
   await idbDelete(`media_${assetId}`);
+  await idbDelete(`media_thumb_${assetId}`);
 
   // Also remove from local backgrounds cache if present
   try {

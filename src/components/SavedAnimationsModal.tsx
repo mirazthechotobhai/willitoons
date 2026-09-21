@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { X, Trash2, CheckCircle2, Loader2, Zap } from "lucide-react";
 import { SavedAnimation, CharacterModel } from "../types";
 import { RunnerIcon } from "./RunnerIcon";
+import { ConfirmDeleteModal } from "./ConfirmDeleteModal";
 
 interface SavedAnimationsModalProps {
   isOpen: boolean;
@@ -30,6 +31,7 @@ export const SavedAnimationsModal: React.FC<SavedAnimationsModalProps> = ({
 }) => {
   const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
+  const [animToDelete, setAnimToDelete] = useState<SavedAnimation | null>(null);
   const [notification, setNotification] = useState<{
     type: 'added' | 'removed';
     serialNumber: number;
@@ -215,7 +217,10 @@ export const SavedAnimationsModal: React.FC<SavedAnimationsModalProps> = ({
                         {/* Delete button */}
                         <button
                           type="button"
-                          onClick={(e) => onDeleteAnimation(anim.id, e)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAnimToDelete(anim);
+                          }}
                           title="Delete from Firebase"
                           className="opacity-0 group-hover:opacity-100 p-1 rounded-md bg-rose-950/80 text-rose-300 hover:text-white hover:bg-rose-600 transition cursor-pointer"
                         >
@@ -332,6 +337,23 @@ export const SavedAnimationsModal: React.FC<SavedAnimationsModalProps> = ({
               </button>
             )}
           </div>
+        )}
+
+        {/* Security Verified Delete Modal with Passcode 686800 */}
+        {animToDelete && (
+          <ConfirmDeleteModal
+            isOpen={true}
+            title="Delete Saved Animation"
+            itemName={animToDelete.fileName ? animToDelete.fileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ') : `Animation ${animToDelete.serialNumber}`}
+            itemType="animation asset"
+            description="This will permanently remove the animation from Firebase cloud storage and delete it from your character assets."
+            onClose={() => setAnimToDelete(null)}
+            onConfirm={() => {
+              const targetId = animToDelete.id;
+              setAnimToDelete(null);
+              onDeleteAnimation(targetId, { stopPropagation: () => {} } as React.MouseEvent);
+            }}
+          />
         )}
       </div>
     </div>

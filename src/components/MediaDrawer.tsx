@@ -12,6 +12,7 @@ import {
   fileToPermanentDataURL,
 } from '../services/mediaAssetService';
 import { isGifMedia, getGifDuration } from '../utils/gifUtils';
+import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import {
   Upload,
   Sparkles,
@@ -69,8 +70,8 @@ export const MediaDrawer: React.FC<MediaDrawerProps> = ({
 
   if (!isOpen) return null;
 
-  // Separate user uploaded assets and stock backgrounds
-  const userUploadedVisuals = userAssets.filter(a => a.type === 'image' || a.type === 'video');
+  // Separate user uploaded assets and stock backgrounds (excluding Asset Library items)
+  const userUploadedVisuals = userAssets.filter(a => !a.isAssetLibrary && (a.type === 'image' || a.type === 'video'));
   const stockVisuals = STOCK_BACKGROUNDS;
 
   let displayedVisualAssets: MediaAsset[] = [];
@@ -686,37 +687,22 @@ export const MediaDrawer: React.FC<MediaDrawerProps> = ({
         </div>
       )}
 
-      {/* MODAL: DELETE CONFIRMATION */}
-      {deleteConfirmId && (
-        <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 p-4 w-full max-w-xs space-y-3 animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center space-x-2.5 text-red-600">
-              <div className="p-2 bg-red-50 rounded-xl shrink-0">
-                <Trash2 className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-sm font-bold text-slate-800">Delete Asset?</h4>
-                <p className="text-[11px] text-slate-500">This will permanently remove it from Firestore cloud & local storage.</p>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-100">
-              <button
-                onClick={() => setDeleteConfirmId(null)}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => handleDeleteUploadedAsset(deleteConfirmId)}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-600 hover:bg-red-700 text-white cursor-pointer shadow-xs"
-              >
-                Delete Permanently
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* MODAL: DELETE CONFIRMATION WITH 686800 SECURITY CODE */}
+      {deleteConfirmId && (() => {
+        const targetAsset = userAssets.find(a => a.id === deleteConfirmId);
+        const isAudio = targetAsset?.type === 'audio';
+        return (
+          <ConfirmDeleteModal
+            isOpen={true}
+            title={isAudio ? 'Delete Audio File' : 'Delete Background / Media Image'}
+            itemName={targetAsset?.name || 'Uploaded Media Asset'}
+            itemType={isAudio ? 'audio file' : 'background / media asset'}
+            description="This will permanently delete the asset from Firestore cloud database and local storage. Once deleted, it will no longer be available in your media library."
+            onClose={() => setDeleteConfirmId(null)}
+            onConfirm={() => handleDeleteUploadedAsset(deleteConfirmId)}
+          />
+        );
+      })()}
 
     </div>
   );

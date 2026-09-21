@@ -10,6 +10,7 @@ export interface MediaAsset {
   width?: number;
   height?: number;
   category?: string;
+  isAssetLibrary?: boolean; // When true, exclusively in Asset Library (props/elements), not Media Library (backgrounds/music)
 }
 
 export type JointId = 

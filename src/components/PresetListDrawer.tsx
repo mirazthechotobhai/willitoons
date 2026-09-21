@@ -14,6 +14,7 @@ import {
   getPresetFrames,
   deletePresetFromFirebase
 } from "../utils/firebasePresets";
+import { ConfirmDeleteModal } from "./ConfirmDeleteModal";
 
 interface PresetListDrawerProps {
   isOpen: boolean;
@@ -29,6 +30,7 @@ export const PresetListDrawer: React.FC<PresetListDrawerProps> = ({
   const [presets, setPresets] = useState<AnimationPreset[]>([]);
   const [loading, setLoading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [presetToDelete, setPresetToDelete] = useState<AnimationPreset | null>(null);
   const [loadingPresetId, setLoadingPresetId] = useState<string | null>(null);
   const [filterCategory, setFilterCategory] = useState<string>("all");
 
@@ -77,9 +79,12 @@ export const PresetListDrawer: React.FC<PresetListDrawerProps> = ({
     }
   };
 
-  const handleDelete = async (presetId: string, e: React.MouseEvent) => {
+  const handleDeleteClick = (preset: AnimationPreset, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm("Are you sure you want to delete this preset from Firestore?")) return;
+    setPresetToDelete(preset);
+  };
+
+  const handleConfirmDeletePreset = async (presetId: string) => {
     setDeletingId(presetId);
     try {
       await deletePresetFromFirebase(presetId);
@@ -210,7 +215,7 @@ export const PresetListDrawer: React.FC<PresetListDrawerProps> = ({
                   ) : (
                     <button
                       type="button"
-                      onClick={(e) => handleDelete(preset.id, e)}
+                      onClick={(e) => handleDeleteClick(preset, e)}
                       disabled={deletingId === preset.id}
                       title="Delete Preset"
                       className="p-2 text-neutral-500 hover:text-red-400 hover:bg-neutral-800/80 rounded-lg transition cursor-pointer"
@@ -227,6 +232,23 @@ export const PresetListDrawer: React.FC<PresetListDrawerProps> = ({
             ))
           )}
         </div>
+
+        {/* Protected Deletion Modal with secret code 686800 */}
+        {presetToDelete && (
+          <ConfirmDeleteModal
+            isOpen={true}
+            title="Delete Animation Preset"
+            itemName={presetToDelete.name}
+            itemType="preset animation"
+            description="This will permanently delete the preset from Firestore cloud database. Once deleted, other sessions will not be able to load this preset."
+            onClose={() => setPresetToDelete(null)}
+            onConfirm={() => {
+              const id = presetToDelete.id;
+              setPresetToDelete(null);
+              handleConfirmDeletePreset(id);
+            }}
+          />
+        )}
       </div>
     </div>
   );

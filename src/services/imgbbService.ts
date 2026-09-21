@@ -4,6 +4,11 @@
  */
 
 export const DEFAULT_IMGBB_API_KEY = '9cf974acba9d5d5d715bf14db07d697a';
+export const FALLBACK_IMGBB_API_KEYS = [
+  '9cf974acba9d5d5d715bf14db07d697a',
+  '4c9c148bb0170a455a0ae38d0feeb659',
+  '2d7c58852e185c5b9f71c4c1a84f334d',
+];
 const IMGBB_STORAGE_KEY = 'willitoons_imgbb_api_key';
 
 export function getImgBBApiKey(): string {
@@ -53,80 +58,63 @@ export async function uploadImageToImgBB(
   file: File | Blob,
   customName?: string
 ): Promise<ImgBBUploadResult> {
-  const apiKey = getImgBBApiKey();
+  const customKey = getImgBBApiKey();
+  const keysToTry = Array.from(new Set([customKey, ...FALLBACK_IMGBB_API_KEYS]));
   const fileName = customName || (file instanceof File ? file.name : `bg-${Date.now()}`);
 
-  const formData = new FormData();
-  formData.append('image', file);
-  if (fileName) {
-    formData.append('name', fileName.replace(/\.[^/.]+$/, ''));
-  }
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
-
-    const response = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
-      method: 'POST',
-      body: formData,
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const json = await response.json();
-      if (json && json.success && json.data) {
-        const data = json.data;
-        return {
-          success: true,
-          url: data.url || data.display_url,
-          displayUrl: data.display_url || data.url,
-          thumbnailUrl: data.thumb?.url || data.display_url || data.url,
-          deleteUrl: data.delete_url,
-          id: data.id,
-          title: data.title || fileName,
-          width: data.width,
-          height: data.height,
-          isFallback: false,
-        };
-      }
+  for (let k = 0; k < keysToTry.length; k++) {
+    const apiKey = keysToTry[k];
+    const formData = new FormData();
+    formData.append('image', file);
+    if (fileName) {
+      formData.append('name', fileName.replace(/\.[^/.]+$/, ''));
     }
 
-    // Try parsing error message from response
-    let errorMsg = `HTTP Error ${response.status}`;
     try {
-      const errJson = await response.json();
-      if (errJson?.error?.message) {
-        errorMsg = errJson.error.message;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+
+      const response = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const json = await response.json();
+        if (json && json.success && json.data) {
+          const data = json.data;
+          return {
+            success: true,
+            url: data.url || data.display_url,
+            displayUrl: data.display_url || data.url,
+            thumbnailUrl: data.thumb?.url || data.display_url || data.url,
+            deleteUrl: data.delete_url,
+            id: data.id,
+            title: data.title || fileName,
+            width: data.width,
+            height: data.height,
+            isFallback: false,
+          };
+        }
       }
     } catch {
-      // ignore
+      // Continue to next key if available
     }
-
-    console.warn(`ImgBB upload request failed (${errorMsg}), using local data URL fallback.`);
-    const fallbackDataUrl = await readFileAsDataURL(file);
-    return {
-      success: true,
-      url: fallbackDataUrl,
-      displayUrl: fallbackDataUrl,
-      thumbnailUrl: fallbackDataUrl,
-      title: fileName,
-      isFallback: true,
-      error: errorMsg,
-    };
-  } catch (error) {
-    console.warn('ImgBB upload network exception, using local data URL fallback:', error);
-    const fallbackDataUrl = await readFileAsDataURL(file);
-    return {
-      success: true,
-      url: fallbackDataUrl,
-      displayUrl: fallbackDataUrl,
-      thumbnailUrl: fallbackDataUrl,
-      title: fileName,
-      isFallback: true,
-      error: error instanceof Error ? error.message : 'Network error',
-    };
   }
+
+  // Gracefully fallback to high-resolution local base64 data URL
+  console.warn('ImgBB keys exhausted or offline, using local data URL fallback.');
+  const fallbackDataUrl = await readFileAsDataURL(file);
+  return {
+    success: true,
+    url: fallbackDataUrl,
+    displayUrl: fallbackDataUrl,
+    thumbnailUrl: fallbackDataUrl,
+    title: fileName,
+    isFallback: true,
+  };
 }
 
 /**
